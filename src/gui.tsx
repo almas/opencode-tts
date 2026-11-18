@@ -16,7 +16,6 @@ import {
   READ_BUTTON_ATTR,
   READ_MENU_ATTR,
   buttonStateFor,
-  claimMenu,
   pickMessageText,
   triggerInsidePanel,
   type ButtonState,
@@ -814,7 +813,6 @@ export default Plugin.define({
      */
     function ReadControls(): JSX.Element {
       const panelSelector = "#review-panel"
-      const menuHostMarker = `${READ_MENU_ATTR}-host`
       let scanTimer: number | undefined
       let observer: MutationObserver | undefined
 
@@ -851,6 +849,10 @@ export default Plugin.define({
 
       const syncStates = () => {
         for (const button of document.querySelectorAll<HTMLElement>(`[${READ_BUTTON_ATTR}]`)) applyState(button)
+        // Keep an injected menu item's label honest while its popup stays open
+        // across playback state changes.
+        for (const item of document.querySelectorAll<HTMLElement>(`[${READ_MENU_ATTR}]`))
+          item.textContent = playingId() || busyId() ? ctx.t("tts.context.stop") : ctx.t("tts.menu.readPreview")
       }
 
       const scanButtons = () => {
@@ -885,10 +887,16 @@ export default Plugin.define({
       }
 
       const injectMenuItem = (menu: Element) => {
-        if (!claimMenu(menu as HTMLElement, menuHostMarker)) return
+        // One popup can hold several role=menu sections (and nested menus);
+        // only the outermost element of the first section takes the item, so
+        // the same item never appears twice in one menu.
+        if (menu.parentElement?.closest('[role="menu"]')) return
+        if (menu.closest("[data-tts-selection-menu]")) return
+        const popupRoot = menu.closest('[data-slot="context-menu-dropdown"]') ?? menu
+        if (popupRoot.querySelector(`[${READ_MENU_ATTR}]`)) return
         if (Date.now() - lastTriggerAt > 800) return
         if (!triggerInsidePanel(lastTrigger, panelSelector)) return
-        const template = menu.querySelector('[role="menuitem"]')
+        const template = menu.querySelector(`[role="menuitem"]:not([${READ_MENU_ATTR}])`)
         if (!template) return
         // Clone for the host's item styling; cloneNode copies no listeners, so
         // the clone is inert until the delegated click handler below takes it.
