@@ -44,10 +44,53 @@ interface RpcLike {
 
 const DEFAULT_PREFS: Prefs = { voice: "ja-JP-NanamiNeural", rate: 0, autoPlay: false }
 
+/**
+ * Flatten anything thrown by the SDK into readable text. The client throws
+ * plain objects (ApiError/RpcError shapes), which would otherwise render as
+ * `[object Object]` in toasts and in the app log.
+ */
 function errorText(error: unknown): string {
   if (error instanceof Error && error.message) return error.message
-  if (typeof error === "string") return error
+  if (typeof error === "string" && error) return error
+  if (typeof error === "object" && error !== null) {
+    const e = error as Record<string, unknown>
+    const parts: string[] = []
+    if (typeof e._tag === "string") parts.push(e._tag)
+    else if (typeof e.name === "string" && e.name) parts.push(e.name)
+    if (typeof e.type === "string" && e.type) parts.push(e.type)
+    if (typeof e.message === "string" && e.message && !parts.includes(e.message)) parts.push(e.message)
+    if (typeof e.status === "number" && e.status) parts.push(`HTTP ${e.status}`)
+    if (parts.length) return parts.join(": ").slice(0, 300)
+    try {
+      const json = JSON.stringify(error)
+      if (json && json !== "{}") return json.slice(0, 300)
+    } catch {
+      // circular — fall through
+    }
+  }
   return String(error)
+}
+
+/**
+ * The GUI bundle can mount before the server half of the plugin answers RPC
+ * (a cold service boot registers both halves in sequence), so startup reads
+ * retry with a gentle backoff instead of leaving defaults silently in place.
+ * A service restart plus SDK reconnect can take ~20s, so the schedule covers
+ * roughly 30 seconds before giving up.
+ */
+async function retryRpc<T>(label: string, call: () => Promise<T>, attempts = 10, baseDelayMs = 800): Promise<T | undefined> {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await call()
+    } catch (error) {
+      if (attempt === attempts) {
+        console.error(`[read-aloud] ${label} failed: ${errorText(error)}`)
+        return undefined
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(baseDelayMs * attempt, 5000)))
+    }
+  }
+  return undefined
 }
 
 function rateLabel(rate: number): string {
@@ -111,14 +154,12 @@ export default Plugin.define({
     // ---------- preferences ----------
     const [prefs, setPrefs] = createSignal<Prefs>({ ...DEFAULT_PREFS })
     const [voices, setVoices] = createSignal<VoiceItem[]>([])
-    void rpc
-      .prefs()
-      .then((value) => setPrefs(value as Prefs))
-      .catch((error) => console.error("[read-aloud] prefs", error))
-    void rpc
-      .voices()
-      .then((value) => setVoices((value as { voices: VoiceItem[] }).voices))
-      .catch((error) => console.error("[read-aloud] voices", error))
+    void retryRpc("prefs", () => rpc.prefs()).then((value) => {
+      if (value) setPrefs(value as Prefs)
+    })
+    void retryRpc("voices", () => rpc.voices()).then((value) => {
+      if (value) setVoices((value as { voices: VoiceItem[] }).voices)
+    })
 
     const savePrefs = async (patch: Partial<Prefs>) => {
       const next = { ...prefs(), ...patch }
@@ -126,7 +167,7 @@ export default Plugin.define({
       try {
         setPrefs((await rpc.setPrefs(next)) as Prefs)
       } catch (error) {
-        console.error("[read-aloud] setPrefs", error)
+        console.error(`[read-aloud] setPrefs failed: ${errorText(error)}`)
         ctx.toast.show({ title: ctx.t("read-aloud.error"), description: errorText(error), variant: "error" })
       }
     }
@@ -185,7 +226,7 @@ export default Plugin.define({
         await playAudio(result.audio, marker)
       } catch (error) {
         if (mine !== token) return
-        console.error("[read-aloud] speak", error)
+        console.error(`[read-aloud] speak failed: ${errorText(error)}`)
         ctx.toast.show({ title: ctx.t("read-aloud.error"), description: errorText(error), variant: "error" })
       } finally {
         if (busyId() === marker) setBusyId("")

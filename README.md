@@ -28,7 +28,13 @@ From GitHub (once published), or with a local path:
 }
 ```
 
-Restart OpenCode Desktop. Nothing else to install — the TTS transport is plain Node.js `WebSocket` + `crypto`.
+Then **fully restart the OpenCode background service** (quitting the window is not enough — the service is a separate process):
+
+```sh
+~/.config/ai.opencode.desktop/cli/*/opencode-cli service restart
+```
+
+A plugin's GUI half is registered only when the service boots, so without this restart you get no menu entry/button. Beyond that nothing else to install — the TTS transport is plain Node.js `WebSocket` + `crypto`.
 
 > Network note: the plugin connects to `speech.platform.bing.com` (the same endpoint the Edge browser "Read aloud" uses). No audio ever leaves your machine other than the text being synthesized.
 
