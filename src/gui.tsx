@@ -6,25 +6,27 @@
  * <audio> element. Sessions, the speech service and user preferences all live
  * on the server side; this file only draws and plays.
  */
-import { For, Show, createResource, createSignal, onCleanup, type JSX } from "solid-js"
+import { For, Show, createEffect, createResource, createSignal, onCleanup, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { Command, Panel, Plugin, SettingsPage, Slot, type MountedSession } from "@opencode/plugin/gui"
 import { TtsRpc, type Prefs, type ReplyItem, type SpeakResult, type VoiceItem } from "./rpc"
 import { fileLabel, previewedFilePath } from "./preview"
+import {
+  COPY_WRAPPER_SELECTOR,
+  READ_BUTTON_ATTR,
+  READ_MENU_ATTR,
+  buttonStateFor,
+  claimMenu,
+  pickMessageText,
+  triggerInsidePanel,
+  type ButtonState,
+} from "./read_aloud"
 
 /** The host components we use; the public types keep the registry open, so we type the calls. */
 interface IconProps {
   name: string
   size?: "small" | "normal" | "large"
   class?: string
-}
-
-/** `SlotMap["session.header"]`: the session and active fields are reactive getters. */
-interface HeaderProps {
-  readonly screen: unknown
-  readonly session: MountedSession
-  readonly active: boolean
-  readonly compact: boolean
 }
 
 /** `PanelProps`: reactive getters; access through the props object, never destructure. */
@@ -98,13 +100,42 @@ function rateLabel(rate: number): string {
   return rate === 0 ? "1.0x" : `${(1 + rate / 100).toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}x`
 }
 
+/** Host `outline-audio` glyph, inlined so injected DOM matches the app's icons. */
+const READ_ICON_AUDIO =
+  '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+  '<path d="M2.29546 5.62775V8.37207M5.4318 1.96875V12.0312M8.56815 4.40801V9.59173M11.7045 5.62775V8.37207" stroke="currentColor" stroke-linecap="square"/>' +
+  "</svg>"
+
+/** Host `stop` glyph, shown while one message's audio plays. */
+const READ_ICON_STOP =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+  '<path d="M13 3H3V13H13V3Z" fill="currentColor"/>' +
+  "</svg>"
+
+const READ_STYLE_ID = "oc-tts-read-styles"
+
+/** One injected stylesheet: busy pulse plus the icon slot's inline layout. */
+function injectReadStyles() {
+  if (document.getElementById(READ_STYLE_ID)) return
+  const style = document.createElement("style")
+  style.id = READ_STYLE_ID
+  style.textContent = `
+@keyframes oc-tts-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+[data-oc-tts-read][data-oc-tts-state="busy"] { animation: oc-tts-pulse 1s ease-in-out infinite; }
+[data-oc-tts-read] [data-slot="icon-svg"] { display: inline-flex; align-items: center; justify-content: center; }
+[data-oc-tts-read-menu] { cursor: pointer; }
+`
+  document.head.appendChild(style)
+}
+
 export default Plugin.define({
   i18n: {
     en: {
       "tts.name": "TTS",
       "tts.panel.title": "TTS",
-      "tts.action.play": "Read the latest reply aloud",
       "tts.action.play-item": "Read this reply aloud",
+      "tts.action.read": "Read this reply aloud",
+      "tts.action.read-busy": "Preparing audio…",
       "tts.action.stop": "Stop reading aloud",
       "tts.action.refresh": "Reload replies",
       "tts.action.settings": "TTS settings",
@@ -124,6 +155,7 @@ export default Plugin.define({
       "tts.context.read": "Read the selection aloud",
       "tts.context.stop": "Stop reading aloud",
       "tts.action.file": "Read the previewed file aloud",
+      "tts.menu.readPreview": "Read the previewed file aloud",
       "tts.file.none": "No file is open in the preview panel",
       "tts.file.empty": "No text to read in {file}",
       "tts.file.reading": "Reading {file}",
@@ -132,8 +164,9 @@ export default Plugin.define({
     ja: {
       "tts.name": "読み上げ",
       "tts.panel.title": "読み上げ",
-      "tts.action.play": "最新の返信を読み上げる",
       "tts.action.play-item": "この返信を読み上げる",
+      "tts.action.read": "この返信を読み上げる",
+      "tts.action.read-busy": "音声を準備中…",
       "tts.action.stop": "読み上げを停止",
       "tts.action.refresh": "一覧を再読込",
       "tts.action.settings": "読み上げの設定",
@@ -153,6 +186,7 @@ export default Plugin.define({
       "tts.context.read": "選択した文字列を読み上げ",
       "tts.context.stop": "読み上げを停止",
       "tts.action.file": "プレビュー中のファイルを読み上げる",
+      "tts.menu.readPreview": "プレビュー中のファイルを読み上げる",
       "tts.file.none": "プレビューパネルに開かれているファイルがありません",
       "tts.file.empty": "{file} に読み上げられる文字列がありません",
       "tts.file.reading": "{file} を読み上げています",
@@ -364,62 +398,19 @@ export default Plugin.define({
       run: openPanel,
     })
 
-    const headerStyle = (on: boolean) => ({
-      display: "inline-flex",
-      "align-items": "center",
-      "justify-content": "center",
-      width: "24px",
-      height: "24px",
-      padding: "0 6px",
-      background: "transparent",
-      border: "none",
-      "border-radius": "4px",
-      cursor: "pointer",
-      color: on ? "var(--color-text-interactive-base, inherit)" : "inherit",
-    })
-
-    ctx.add(Slot, {
-      at: "session.header",
-      order: 35,
-      render: (props: HeaderProps) => (
-        <Show when={props.active}>
-          <button
-            type="button"
-            class="ra-header-button"
-            title={ctx.t("tts.action.play")}
-            aria-label={ctx.t("tts.action.play")}
-            onClick={() => {
-              if (playingId() === "latest" && audio && !audio.paused) stop()
-              else if (busyId() !== "latest") playLatest(props.session)
-            }}
-            style={headerStyle(playingId() === "latest" || busyId() === "latest")}
-          >
-            <Icon name={busyId() === "latest" ? "refresh" : playingId() === "latest" ? "stop" : "waveform"} size="small" />
-          </button>
-          <button
-            type="button"
-            class="ra-header-button"
-            title={ctx.t("tts.action.file")}
-            aria-label={ctx.t("tts.action.file")}
-            onClick={() => {
-              if (playingId() === "file" && audio && !audio.paused) stop()
-              else if (busyId() !== "file") void readPreviewedFile()
-            }}
-            style={headerStyle(playingId() === "file" || busyId() === "file")}
-          >
-            <Icon name={busyId() === "file" ? "refresh" : playingId() === "file" ? "stop" : "file-document"} size="small" />
-          </button>
-        </Show>
-      ),
-    })
-
-    // ---------- selection context menu ----------
-    // The host does not let plugins add entries to its own right-click menu, so we
-    // watch right-clicks over a text selection inside a message ([data-message-id])
-    // and show our own small menu at the cursor instead of the host's.
+    // ---------- read-aloud controls ----------
+    // A button next to each reply's copy button, plus items in the Preview
+    // panel's tab right-click and kebab menus (see ReadControls below).
+    // The host has no registry for either, so the component injects into the
+    // DOM and mounts nothing itself.
     ctx.add(Slot, {
       at: "window.bottom",
-      render: () => <SelectionMenu />,
+      render: () => (
+        <>
+          <ReadControls />
+          <SelectionMenu />
+        </>
+      ),
     })
 
     const tab = {
@@ -567,15 +558,21 @@ export default Plugin.define({
       const onContextMenu = (event: MouseEvent) => {
         if (event.defaultPrevented) return
         if (el && event.target instanceof Node && el.contains(event.target)) return
+        // The review panel shows files in a CodeMirror `.cm-content` that is
+        // contenteditable but read-only in practice, so selections there count;
+        // only the composer's editors are excluded.
+        const fromPanel = event.target instanceof Element && event.target.closest("#review-panel") != null
+        const fromCodeView = event.target instanceof Element && event.target.closest(".cm-content") != null
         let inMessage = false
         let inEditor = false
         for (const node of event.composedPath()) {
           if (!(node instanceof Element)) continue
           if (!inMessage && node.hasAttribute("data-message-id")) inMessage = true
-          if (!inEditor && (node.tagName === "TEXTAREA" || node.tagName === "INPUT" || (node instanceof HTMLElement && node.isContentEditable))) inEditor = true
+          if (!inEditor && (node.tagName === "TEXTAREA" || node.tagName === "INPUT")) inEditor = true
+          if (!inEditor && !fromPanel && !fromCodeView && node instanceof HTMLElement && node.isContentEditable) inEditor = true
           if (inMessage && inEditor) break
         }
-        if (!inMessage || inEditor) return
+        if ((!inMessage && !fromPanel) || inEditor) return
         const text = window.getSelection()?.toString().trim() ?? ""
         if (!text) return
         event.preventDefault()
@@ -693,6 +690,181 @@ export default Plugin.define({
           {props.label}
         </button>
       )
+    }
+
+    /**
+     * Injects the read-aloud button into every reply's hover toolbar (next to
+     * the copy button) and a "read the previewed file" item into the Kobalte
+     * menus opened from inside the Preview panel (tab right-click and kebab).
+     * The SDK has no registry for either, so a MutationObserver watches the
+     * host DOM; the component itself renders nothing.
+     */
+    function ReadControls(): JSX.Element {
+      const panelSelector = "#review-panel"
+      const menuHostMarker = `${READ_MENU_ATTR}-host`
+      let scanTimer: number | undefined
+      let observer: MutationObserver | undefined
+
+      // Kobalte portals menus to document.body, so by the time we see one the
+      // pointer target has moved into the menu; remember the element that was
+      // pressed or right-clicked last to judge where the menu came from.
+      let lastTrigger: Element | null = null
+      let lastTriggerAt = 0
+      const rememberTrigger = (event: Event) => {
+        if (event.target instanceof Element) {
+          lastTrigger = event.target
+          lastTriggerAt = Date.now()
+        }
+      }
+
+      const iconMarkup = (state: ButtonState) =>
+        `<span data-slot="icon-svg" style="display:inline-flex;align-items:center;justify-content:center">${
+          state === "playing" ? READ_ICON_STOP : READ_ICON_AUDIO
+        }</span>`
+
+      /** Push the shared play state into one (non-reactive) injected button. */
+      const applyState = (button: HTMLElement) => {
+        const own = button.getAttribute("data-oc-tts-message") ?? ""
+        const state = buttonStateFor(own, playingId(), busyId())
+        if (button.getAttribute("data-oc-tts-state") !== state) {
+          button.setAttribute("data-oc-tts-state", state)
+          button.innerHTML = iconMarkup(state)
+        }
+        const label =
+          state === "playing" ? ctx.t("tts.action.stop") : state === "busy" ? ctx.t("tts.action.read-busy") : ctx.t("tts.action.read")
+        button.title = label
+        button.setAttribute("aria-label", label)
+      }
+
+      const syncStates = () => {
+        for (const button of document.querySelectorAll<HTMLElement>(`[${READ_BUTTON_ATTR}]`)) applyState(button)
+      }
+
+      const scanButtons = () => {
+        for (const wrapper of document.querySelectorAll(COPY_WRAPPER_SELECTOR)) {
+          if (wrapper.querySelector(`[${READ_BUTTON_ATTR}]`)) continue
+          const scope = wrapper.closest("[data-message-id]")
+          if (!scope) continue
+          // One button per message: later text parts of the same reply share it.
+          if (scope.querySelector(`[${READ_BUTTON_ATTR}]`)) continue
+          const button = document.createElement("button")
+          button.type = "button"
+          // Host button attributes give the app's own ghost-icon look.
+          button.setAttribute("data-component", "icon-button-v2")
+          button.setAttribute("data-size", "small")
+          button.setAttribute("data-variant", "ghost-muted")
+          button.setAttribute(READ_BUTTON_ATTR, "")
+          button.setAttribute("data-oc-tts-message", scope.getAttribute("data-message-id") ?? "")
+          button.setAttribute("data-oc-tts-state", "idle")
+          button.innerHTML = iconMarkup("idle")
+          // Last child of the hover toolbar, so it inherits its layout.
+          wrapper.appendChild(button)
+          applyState(button)
+        }
+      }
+
+      const scheduleScan = () => {
+        if (scanTimer !== undefined) return
+        scanTimer = window.setTimeout(() => {
+          scanTimer = undefined
+          scanButtons()
+        }, 120)
+      }
+
+      const injectMenuItem = (menu: Element) => {
+        if (!claimMenu(menu as HTMLElement, menuHostMarker)) return
+        if (Date.now() - lastTriggerAt > 800) return
+        if (!triggerInsidePanel(lastTrigger, panelSelector)) return
+        const template = menu.querySelector('[role="menuitem"]')
+        if (!template) return
+        // Clone for the host's item styling; cloneNode copies no listeners, so
+        // the clone is inert until the delegated click handler below takes it.
+        const item = template.cloneNode(true) as HTMLElement
+        item.removeAttribute("id")
+        item.removeAttribute("data-highlighted")
+        item.removeAttribute("data-disabled")
+        item.removeAttribute("aria-disabled")
+        item.removeAttribute("aria-haspopup")
+        item.setAttribute("role", "menuitem")
+        item.setAttribute(READ_MENU_ATTR, "")
+        item.textContent = ctx.t("tts.menu.readPreview")
+        menu.appendChild(item)
+      }
+
+      const scanMenus = () => {
+        for (const menu of document.querySelectorAll('[role="menu"]')) injectMenuItem(menu)
+      }
+
+      const closeHostMenus = () => {
+        for (const menu of document.querySelectorAll('[role="menu"]')) {
+          menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))
+        }
+      }
+
+      const readMessage = (button: HTMLElement) => {
+        const own = button.getAttribute("data-oc-tts-message") ?? ""
+        const state = buttonStateFor(own, playingId(), busyId())
+        if (state === "playing") stop()
+        else if (state === "busy") return
+        else {
+          const scope = button.closest("[data-message-id]")
+          const text = scope ? pickMessageText(scope) : ""
+          if (!text) {
+            ctx.toast.show({ title: ctx.t("tts.empty"), variant: "default" })
+            return
+          }
+          void play({ text }, own || "message")
+        }
+      }
+
+      const onClick = (event: MouseEvent) => {
+        if (!(event.target instanceof Element)) return
+        const menuItem = event.target.closest(`[${READ_MENU_ATTR}]`)
+        if (menuItem) {
+          // Capture phase stops the click before Kobalte resolves it against
+          // the item we cloned from, then Escape closes the menu.
+          event.preventDefault()
+          event.stopPropagation()
+          closeHostMenus()
+          void readPreviewedFile()
+          return
+        }
+        const button = event.target.closest(`[${READ_BUTTON_ATTR}]`)
+        if (button instanceof HTMLElement) {
+          event.preventDefault()
+          event.stopPropagation()
+          readMessage(button)
+        }
+      }
+
+      document.addEventListener("pointerdown", rememberTrigger, true)
+      document.addEventListener("contextmenu", rememberTrigger, true)
+      document.addEventListener("click", onClick, true)
+      observer = new MutationObserver(() => {
+        scanMenus()
+        scheduleScan()
+      })
+      observer.observe(document.body, { childList: true, subtree: true })
+      injectReadStyles()
+      scanButtons()
+      scanMenus()
+
+      // Injected DOM is not reactive, so push play-state changes into it.
+      createEffect(() => {
+        playingId()
+        busyId()
+        syncStates()
+      })
+
+      onCleanup(() => {
+        observer?.disconnect()
+        if (scanTimer !== undefined) window.clearTimeout(scanTimer)
+        document.removeEventListener("pointerdown", rememberTrigger, true)
+        document.removeEventListener("contextmenu", rememberTrigger, true)
+        document.removeEventListener("click", onClick, true)
+      })
+
+      return null
     }
 
     ctx.add(SettingsPage, {
