@@ -29,6 +29,14 @@ interface IconProps {
   class?: string
 }
 
+/** `SlotMap["session.header"]`: the session and active fields are reactive getters. */
+interface HeaderProps {
+  readonly screen: unknown
+  readonly session: MountedSession
+  readonly active: boolean
+  readonly compact: boolean
+}
+
 /** `PanelProps`: reactive getters; access through the props object, never destructure. */
 interface PanelPropsLike {
   readonly tab: unknown
@@ -396,6 +404,65 @@ export default Plugin.define({
         return ctx.t("tts.command.open")
       },
       run: openPanel,
+    })
+
+    // ---------- chat-header control ----------
+    // Sits right of the session title. Idle it reads the latest reply; while
+    // *any* audio plays — message button, selection, file, this button — it
+    // becomes the stop control, so playback can be stopped from anywhere.
+    ctx.add(Slot, {
+      at: "session.header",
+      order: 35,
+      render: (props: HeaderProps) => (
+        <Show when={props.active}>
+          <Show
+            when={playingId() || busyId()}
+            fallback={
+              <button
+                type="button"
+                title={ctx.t("tts.command.latest")}
+                aria-label={ctx.t("tts.command.latest")}
+                onClick={() => playLatest(props.session)}
+                style={{
+                  display: "inline-flex",
+                  "align-items": "center",
+                  "justify-content": "center",
+                  height: "24px",
+                  padding: "0 6px",
+                  background: "transparent",
+                  border: "none",
+                  "border-radius": "4px",
+                  cursor: "pointer",
+                  color: "inherit",
+                }}
+              >
+                <span innerHTML={READ_ICON_AUDIO} />
+              </button>
+            }
+          >
+            <button
+              type="button"
+              title={ctx.t("tts.context.stop")}
+              aria-label={ctx.t("tts.context.stop")}
+              onClick={stop}
+              style={{
+                display: "inline-flex",
+                "align-items": "center",
+                "justify-content": "center",
+                height: "24px",
+                padding: "0 6px",
+                background: "transparent",
+                border: "none",
+                "border-radius": "4px",
+                cursor: "pointer",
+                color: "inherit",
+              }}
+            >
+              <span innerHTML={READ_ICON_STOP} />
+            </button>
+          </Show>
+        </Show>
+      ),
     })
 
     // ---------- read-aloud controls ----------
