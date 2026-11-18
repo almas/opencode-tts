@@ -116,7 +116,7 @@ async function secMsGec(now: number = Date.now()): Promise<string> {
 
 /* -------------------------------------------------------------- text layout */
 
-function escapeXml(text: string): string {
+export function escapeXml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -170,7 +170,7 @@ export function sanitizeForSpeech(text: string): string {
 }
 
 /** Splits escaped text into frames of at most `maxBytes`, never mid-character. */
-function splitBytes(text: string, maxBytes: number): string[] {
+export function splitBytes(text: string, maxBytes: number): string[] {
   const encoder = new TextEncoder()
   const chunks: string[] = []
   let rest = text
@@ -203,7 +203,7 @@ type SynthesizeOptions = {
 }
 
 /** One SSML frame's worth of speech, as the service takes it. */
-function ssml(voice: string, rate: string, escaped: string): string {
+export function ssml(voice: string, rate: string, escaped: string): string {
   const speed = rate && rate !== "0%" ? rate : "+0%"
   return (
     '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="ja-JP">' +

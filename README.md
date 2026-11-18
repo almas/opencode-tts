@@ -74,6 +74,11 @@ OpenCode Desktop に Read Aloud 風の日本語読み上げを追加するプラ
 - 合成には `speech.platform.bing.com` へのアウトバウンド接続が必要です（読み上げたいテキストのみ送信されます）。
 - xrdp 越しセッションではサウンド再生先が無いことがあり、再生テストは実機で行ってください。
 
+## Security notes
+
+- **No credentials anywhere.** The `trustedclienttoken` in `src/tts.ts` is a constant Microsoft ships inside every Edge installation (public since the EdgeTTS protocol was reverse-engineered; identical in every edge-tts implementation) — a protocol constant, not a secret. Text goes only to the public Edge TTS WebSocket, and only when you press Play. 認証情報はいかなるファイルにも含まれません。上記トークンは Edge 全インストール共通の公開定数です。
+- Everything the assistant said is XML-escaped before being placed in the SSML envelope (`src/tts.ts` → `escapeXml`), so reply text can never inject tags into the request. Covered by `test/tts.test.ts`.
+
 ## Acknowledgements
 
 - [msedge-tts](https://github.com/andresayac/msedge-tts) (MIT) — port of the Sec-MS-GEC v2 token generation.
