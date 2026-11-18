@@ -892,6 +892,13 @@ export default Plugin.define({
         // the same item never appears twice in one menu.
         if (menu.parentElement?.closest('[role="menu"]')) return
         if (menu.closest("[data-tts-selection-menu]")) return
+        // With an active text selection the floating menu already offers to
+        // read it (plus stop while playing), so the host menu gets no item;
+        // one injected by an earlier idle right-click is dropped here.
+        if (window.getSelection()?.toString().trim()) {
+          for (const stale of document.querySelectorAll(`[${READ_MENU_ATTR}]`)) stale.remove()
+          return
+        }
         const popupRoot = menu.closest('[data-slot="context-menu-dropdown"]') ?? menu
         if (popupRoot.querySelector(`[${READ_MENU_ATTR}]`)) return
         if (Date.now() - lastTriggerAt > 800) return
