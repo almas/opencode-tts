@@ -37,8 +37,8 @@ interface RpcLike {
   speak(input: { sessionID?: string; messageID?: string; text?: string }): Promise<unknown>
   replies(input: { sessionID: string }): Promise<unknown>
   latest(input: { sessionID: string }): Promise<unknown>
-  voices(): Promise<unknown>
-  prefs(): Promise<unknown>
+  voices(input?: object): Promise<unknown>
+  prefs(input?: object): Promise<unknown>
   setPrefs(input: Partial<Prefs>): Promise<unknown>
 }
 
@@ -154,10 +154,10 @@ export default Plugin.define({
     // ---------- preferences ----------
     const [prefs, setPrefs] = createSignal<Prefs>({ ...DEFAULT_PREFS })
     const [voices, setVoices] = createSignal<VoiceItem[]>([])
-    void retryRpc("prefs", () => rpc.prefs()).then((value) => {
+    void retryRpc("prefs", () => rpc.prefs({})).then((value) => {
       if (value) setPrefs(value as Prefs)
     })
-    void retryRpc("voices", () => rpc.voices()).then((value) => {
+    void retryRpc("voices", () => rpc.voices({})).then((value) => {
       if (value) setVoices((value as { voices: VoiceItem[] }).voices)
     })
 
