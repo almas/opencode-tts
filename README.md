@@ -7,6 +7,7 @@ TTS-style Japanese text-to-speech for **OpenCode Desktop**, built on the experim
 ## Features
 
 - **Right-click "選択した文字列を読み上げ"** (read selected text) on any selection in the chat view, via a floating context menu (the host has no plugin context-menu API yet, so the plugin renders its own Portal menu).
+- **Read the previewed file aloud**: a header button and a command read whatever file the review panel has open (Markdown and code are cleaned up server-side before synthesis, and very long files are clipped).
 - **Edge neural voices** (e.g. `ja-JP-NanamiNeural`, `ja-JP-KeitaNeural`, plus the full edge-tts voice list) streamed as MP3 through a direct `speech.platform.bing.com` WebSocket connection. **No Python and no `edge-tts` package required** — the Sec-MS-GEC token logic was ported from [msedge-tts](https://github.com/andresayac/msedge-tts) (MIT, attribution kept in `src/tts.ts`).
 - **Long text is chunked** to fit one SSML frame each and stitched into a single MP3.
 - **Preferences persisted server-side** (`ctx.storage`, key `tts/prefs`): voice, speaking rate (-50%..+50%), auto-play of new assistant messages.
@@ -52,19 +53,21 @@ The server half runs straight from `src/index.ts` (TypeScript is loaded by the h
 
 ```
 GUI (gui.tsx)                      Server (index.ts + tts.ts)
-  ctx.client.rpc(readAloud/*)  ->   /api/rpc/tts/<method>
+  ctx.client.rpc(tts/*)  ->   /api/rpc/tts/<method>
   Audio(data:audio/mpeg)       <-   base64 MP3
 ```
 
 - `synthesize(text, voice, rate)` opens one WebSocket per chunk, sends the `speech.config` + SSML frames exactly like Edge does (including the Sec-MS-GEC right token, time-based SHA-256), and collects binary frames into an MP3.
 - Prefs live in `ctx.storage` so they survive restarts and are shared by all clients.
 - The context menu: a capture-phase `contextmenu` listener finds the current selection and renders a Portal menu with 「選択した文字列を読み上げ」.
+- The previewed file: each tab of the host's review panel carries `data-value="file://<workspace path>"` and the selected one is marked, so the plugin reads that path from the DOM, loads the file through `ctx.screen.current().file` and speaks it like any other text.
 
 ## 日本語
 
-OpenCode Desktop に TTS 風の日本語読み上げを追加するプラグインです。
+OpenCode Desktop に日本語読み上げ (TTS) を追加するプラグインです。
 
 - チャットの文章を選択して右クリック → **「選択した文字列を読み上げ」**
+- ファイルプレビューパネルで開いているファイルもそのまま読み上げられます（ヘッダーボタンまたはコマンド）。
 - 音声は Microsoft Edge のオンライン音声（ニューラル音声）を直接 WebSocket で叩いて取得します。**Python 不要・edge-tts 不要**（Sec-MS-GEC トークン生成は msedge-tts (MIT) から移植、出典表記は `src/tts.ts` に保持）。
 - 声の選択・話速（-50%〜+50%）・「新しいアシスタントメッセージを自動で読む」設定はサーバー側に保存されます。
 - ヘッダーボタンと `/tts` コマンドからも操作できます。
