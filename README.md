@@ -1,6 +1,6 @@
-# opencode-read-aloud
+# opencode-tts
 
-Read Aloud-style Japanese text-to-speech for **OpenCode Desktop**, built on the experimental GUI plugin API. Select text, right-click, and listen — no Python, no cloud account, just the Microsoft Edge neural voices over a direct WebSocket.
+TTS-style Japanese text-to-speech for **OpenCode Desktop**, built on the experimental GUI plugin API. Select text, right-click, and listen — no Python, no cloud account, just the Microsoft Edge neural voices over a direct WebSocket.
 
 日本語版: [下の「日本語」セクション](#日本語) を参照してください。
 
@@ -9,8 +9,8 @@ Read Aloud-style Japanese text-to-speech for **OpenCode Desktop**, built on the 
 - **Right-click "選択した文字列を読み上げ"** (read selected text) on any selection in the chat view, via a floating context menu (the host has no plugin context-menu API yet, so the plugin renders its own Portal menu).
 - **Edge neural voices** (e.g. `ja-JP-NanamiNeural`, `ja-JP-KeitaNeural`, plus the full edge-tts voice list) streamed as MP3 through a direct `speech.platform.bing.com` WebSocket connection. **No Python and no `edge-tts` package required** — the Sec-MS-GEC token logic was ported from [msedge-tts](https://github.com/andresayac/msedge-tts) (MIT, attribution kept in `src/tts.ts`).
 - **Long text is chunked** to fit one SSML frame each and stitched into a single MP3.
-- **Preferences persisted server-side** (`ctx.storage`, key `read-aloud/prefs`): voice, speaking rate (-50%..+50%), auto-play of new assistant messages.
-- Player panel with play/pause/stop and progress, header button, commands (`/read-aloud`), and English/Japanese strings.
+- **Preferences persisted server-side** (`ctx.storage`, key `tts/prefs`): voice, speaking rate (-50%..+50%), auto-play of new assistant messages.
+- Player panel with play/pause/stop and progress, header button, commands (`/tts`), and English/Japanese strings.
 
 ## Install
 
@@ -22,8 +22,8 @@ From GitHub (once published), or with a local path:
 // ~/.config/opencode/opencode.jsonc
 {
   "plugins": [
-    { "package": "github:YOUR_GITHUB/opencode-read-aloud" }
-    // or: "/absolute/path/to/opencode-read-aloud"
+    { "package": "github:YOUR_GITHUB/opencode-tts" }
+    // or: "/absolute/path/to/opencode-tts"
   ]
 }
 ```
@@ -52,7 +52,7 @@ The server half runs straight from `src/index.ts` (TypeScript is loaded by the h
 
 ```
 GUI (gui.tsx)                      Server (index.ts + tts.ts)
-  ctx.client.rpc(readAloud/*)  ->   /api/rpc/read-aloud/<method>
+  ctx.client.rpc(readAloud/*)  ->   /api/rpc/tts/<method>
   Audio(data:audio/mpeg)       <-   base64 MP3
 ```
 
@@ -62,12 +62,12 @@ GUI (gui.tsx)                      Server (index.ts + tts.ts)
 
 ## 日本語
 
-OpenCode Desktop に Read Aloud 風の日本語読み上げを追加するプラグインです。
+OpenCode Desktop に TTS 風の日本語読み上げを追加するプラグインです。
 
 - チャットの文章を選択して右クリック → **「選択した文字列を読み上げ」**
 - 音声は Microsoft Edge のオンライン音声（ニューラル音声）を直接 WebSocket で叩いて取得します。**Python 不要・edge-tts 不要**（Sec-MS-GEC トークン生成は msedge-tts (MIT) から移植、出典表記は `src/tts.ts` に保持）。
 - 声の選択・話速（-50%〜+50%）・「新しいアシスタントメッセージを自動で読む」設定はサーバー側に保存されます。
-- ヘッダーボタンと `/read-aloud` コマンドからも操作できます。
+- ヘッダーボタンと `/tts` コマンドからも操作できます。
 
 注意点:
 

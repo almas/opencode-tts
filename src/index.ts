@@ -1,16 +1,18 @@
 /**
- * Read Aloud — the server half of the plugin.
+ * TTS — the server half of the plugin.
  *
- * Registers the `read-aloud` RPC domain: it fetches assistant replies from
+ * Registers the `tts` RPC domain: it fetches assistant replies from
  * the session, sanitizes them for speech, synthesizes MP3 with the
  * edge-tts service, and keeps user preferences in plugin storage. The GUI
  * half knows nothing about sessions or the speech service.
  */
 import { Plugin } from "@opencode/plugin"
-import { ReadAloudRpc, type Prefs, type ReplyItem, type SpeakInput, type SpeakResult } from "./rpc"
+import { TtsRpc, type Prefs, type ReplyItem, type SpeakInput, type SpeakResult } from "./rpc"
 import { MAX_SPEECH_CHARACTERS, sanitizeForSpeech, synthesize } from "./tts"
 
-const PREFS_KEY = "read-aloud/prefs"
+const PREFS_KEY = "tts/prefs"
+/** Storage key used before the plugin was renamed; preferences migrate on first load. */
+const LEGACY_PREFS_KEY = "read-aloud/prefs"
 const MAX_REPLIES = 20
 const PREVIEW_CHARS = 90
 
@@ -52,14 +54,25 @@ function preview(text: string): string {
 }
 
 export default Plugin.define({
-  id: "read-aloud",
+  id: "tts",
   async setup(ctx) {
+    const normalizePrefs = (stored: Partial<Prefs> | undefined): Prefs => {
+      if (!stored || typeof stored !== "object") return { ...DEFAULT_PREFS }
+      const voice = VOICES.some((voice) => voice.id === stored.voice) ? stored.voice! : DEFAULT_PREFS.voice
+      return { voice, rate: clampRate(stored.rate), autoPlay: stored.autoPlay === true }
+    }
+
     const loadPrefs = async (): Promise<Prefs> => {
       try {
-        const stored = (await ctx.storage.get(PREFS_KEY)) as Partial<Prefs> | undefined
-        if (!stored || typeof stored !== "object") return { ...DEFAULT_PREFS }
-        const voice = VOICES.some((voice) => voice.id === stored.voice) ? stored.voice! : DEFAULT_PREFS.voice
-        return { voice, rate: clampRate(stored.rate), autoPlay: stored.autoPlay === true }
+        let stored = (await ctx.storage.get(PREFS_KEY)) as Partial<Prefs> | undefined
+        if (!stored || typeof stored !== "object") {
+          const legacy = (await ctx.storage.get(LEGACY_PREFS_KEY)) as Partial<Prefs> | undefined
+          if (legacy && typeof legacy === "object") {
+            stored = legacy
+            await ctx.storage.set(PREFS_KEY, { ...normalizePrefs(legacy) })
+          }
+        }
+        return normalizePrefs(stored)
       } catch {
         return { ...DEFAULT_PREFS }
       }
@@ -83,7 +96,7 @@ export default Plugin.define({
       return replies.slice(-MAX_REPLIES)
     }
 
-    await ctx.rpc.register(ReadAloudRpc, {
+    await ctx.rpc.register(TtsRpc, {
       speak: async (raw, control): Promise<SpeakResult> => {
         const input = (raw ?? {}) as SpeakInput
         const prefs = await loadPrefs()

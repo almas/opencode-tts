@@ -1,7 +1,7 @@
 /**
- * Read Aloud — the GUI half of the plugin.
+ * TTS — the GUI half of the plugin.
  *
- * Talks to the server half over the `read-aloud` RPC domain: it fetches
+ * Talks to the server half over the `tts` RPC domain: it fetches
  * assistant replies, asks for synthesized mp3 audio, and plays it in a single
  * <audio> element. Sessions, the speech service and user preferences all live
  * on the server side; this file only draws and plays.
@@ -9,7 +9,7 @@
 import { For, Show, createResource, createSignal, onCleanup, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { Command, Panel, Plugin, SettingsPage, Slot, type MountedSession } from "@opencode/plugin/gui"
-import { ReadAloudRpc, type Prefs, type ReplyItem, type SpeakResult, type VoiceItem } from "./rpc"
+import { TtsRpc, type Prefs, type ReplyItem, type SpeakResult, type VoiceItem } from "./rpc"
 
 /** The host components we use; the public types keep the registry open, so we type the calls. */
 interface IconProps {
@@ -84,7 +84,7 @@ async function retryRpc<T>(label: string, call: () => Promise<T>, attempts = 10,
       return await call()
     } catch (error) {
       if (attempt === attempts) {
-        console.error(`[read-aloud] ${label} failed: ${errorText(error)}`)
+        console.error(`[tts] ${label} failed: ${errorText(error)}`)
         return undefined
       }
       await new Promise((resolve) => setTimeout(resolve, Math.min(baseDelayMs * attempt, 5000)))
@@ -100,54 +100,54 @@ function rateLabel(rate: number): string {
 export default Plugin.define({
   i18n: {
     en: {
-      "read-aloud.name": "Read Aloud",
-      "read-aloud.panel.title": "Read Aloud",
-      "read-aloud.action.play": "Read the latest reply aloud",
-      "read-aloud.action.play-item": "Read this reply aloud",
-      "read-aloud.action.stop": "Stop reading aloud",
-      "read-aloud.action.refresh": "Reload replies",
-      "read-aloud.action.settings": "Read Aloud settings",
-      "read-aloud.command.latest": "Read Aloud: read the latest reply",
-      "read-aloud.command.selection": "Read Aloud: read the selection",
-      "read-aloud.command.stop": "Read Aloud: stop",
-      "read-aloud.command.open": "Read Aloud: show replies",
-      "read-aloud.empty": "No reply to read yet",
-      "read-aloud.no-session": "Open a session to read its replies aloud.",
-      "read-aloud.reply-count": "{count} replies",
-      "read-aloud.error": "Read Aloud failed",
-      "read-aloud.settings.title": "Read Aloud",
-      "read-aloud.settings.voice": "Voice",
-      "read-aloud.settings.rate": "Speed",
-      "read-aloud.settings.auto-play": "Read new replies aloud when the assistant finishes",
-      "read-aloud.context.read": "Read the selection aloud",
-      "read-aloud.context.stop": "Stop reading aloud",
+      "tts.name": "TTS",
+      "tts.panel.title": "TTS",
+      "tts.action.play": "Read the latest reply aloud",
+      "tts.action.play-item": "Read this reply aloud",
+      "tts.action.stop": "Stop reading aloud",
+      "tts.action.refresh": "Reload replies",
+      "tts.action.settings": "TTS settings",
+      "tts.command.latest": "TTS: read the latest reply",
+      "tts.command.selection": "TTS: read the selection",
+      "tts.command.stop": "TTS: stop",
+      "tts.command.open": "TTS: show replies",
+      "tts.empty": "No reply to read yet",
+      "tts.no-session": "Open a session to read its replies aloud.",
+      "tts.reply-count": "{count} replies",
+      "tts.error": "TTS failed",
+      "tts.settings.title": "TTS",
+      "tts.settings.voice": "Voice",
+      "tts.settings.rate": "Speed",
+      "tts.settings.auto-play": "Read new replies aloud when the assistant finishes",
+      "tts.context.read": "Read the selection aloud",
+      "tts.context.stop": "Stop reading aloud",
     },
     ja: {
-      "read-aloud.name": "読み上げ",
-      "read-aloud.panel.title": "読み上げ",
-      "read-aloud.action.play": "最新の返信を読み上げる",
-      "read-aloud.action.play-item": "この返信を読み上げる",
-      "read-aloud.action.stop": "読み上げを停止",
-      "read-aloud.action.refresh": "一覧を再読込",
-      "read-aloud.action.settings": "読み上げの設定",
-      "read-aloud.command.latest": "読み上げ：最新の返信を読み上げる",
-      "read-aloud.command.selection": "読み上げ：選択した文字列を読み上げる",
-      "read-aloud.command.stop": "読み上げ：停止",
-      "read-aloud.command.open": "読み上げ：返信一覧を表示",
-      "read-aloud.empty": "読み上げられる返信がありません",
-      "read-aloud.no-session": "セッションを開くと、その返信を読み上げできます。",
-      "read-aloud.reply-count": "{count} 件の返信",
-      "read-aloud.error": "読み上げに失敗しました",
-      "read-aloud.settings.title": "読み上げ",
-      "read-aloud.settings.voice": "音声",
-      "read-aloud.settings.rate": "速度",
-      "read-aloud.settings.auto-play": "アシスタントの応答完了後、新しい返信を自動で読み上げる",
-      "read-aloud.context.read": "選択した文字列を読み上げ",
-      "read-aloud.context.stop": "読み上げを停止",
+      "tts.name": "読み上げ",
+      "tts.panel.title": "読み上げ",
+      "tts.action.play": "最新の返信を読み上げる",
+      "tts.action.play-item": "この返信を読み上げる",
+      "tts.action.stop": "読み上げを停止",
+      "tts.action.refresh": "一覧を再読込",
+      "tts.action.settings": "読み上げの設定",
+      "tts.command.latest": "読み上げ：最新の返信を読み上げる",
+      "tts.command.selection": "読み上げ：選択した文字列を読み上げる",
+      "tts.command.stop": "読み上げ：停止",
+      "tts.command.open": "読み上げ：返信一覧を表示",
+      "tts.empty": "読み上げられる返信がありません",
+      "tts.no-session": "セッションを開くと、その返信を読み上げできます。",
+      "tts.reply-count": "{count} 件の返信",
+      "tts.error": "読み上げに失敗しました",
+      "tts.settings.title": "読み上げ",
+      "tts.settings.voice": "音声",
+      "tts.settings.rate": "速度",
+      "tts.settings.auto-play": "アシスタントの応答完了後、新しい返信を自動で読み上げる",
+      "tts.context.read": "選択した文字列を読み上げ",
+      "tts.context.stop": "読み上げを停止",
     },
   },
   setup(ctx) {
-    const rpc = ctx.client.rpc(ReadAloudRpc) as unknown as RpcLike
+    const rpc = ctx.client.rpc(TtsRpc) as unknown as RpcLike
     // The host Ui registry is open in the public types; we type the icon call.
     const Icon = (ctx.ui as unknown as { Icon: (props: IconProps) => JSX.Element }).Icon
 
@@ -167,8 +167,8 @@ export default Plugin.define({
       try {
         setPrefs((await rpc.setPrefs(next)) as Prefs)
       } catch (error) {
-        console.error(`[read-aloud] setPrefs failed: ${errorText(error)}`)
-        ctx.toast.show({ title: ctx.t("read-aloud.error"), description: errorText(error), variant: "error" })
+        console.error(`[tts] setPrefs failed: ${errorText(error)}`)
+        ctx.toast.show({ title: ctx.t("tts.error"), description: errorText(error), variant: "error" })
       }
     }
 
@@ -219,15 +219,15 @@ export default Plugin.define({
         const result = (await rpc.speak(input)) as SpeakResult
         if (mine !== token) return
         if (!result?.audio) {
-          ctx.toast.show({ title: ctx.t("read-aloud.empty"), variant: "default" })
+          ctx.toast.show({ title: ctx.t("tts.empty"), variant: "default" })
           return
         }
         if (result.messageID) lastReadId = result.messageID
         await playAudio(result.audio, marker)
       } catch (error) {
         if (mine !== token) return
-        console.error(`[read-aloud] speak failed: ${errorText(error)}`)
-        ctx.toast.show({ title: ctx.t("read-aloud.error"), description: errorText(error), variant: "error" })
+        console.error(`[tts] speak failed: ${errorText(error)}`)
+        ctx.toast.show({ title: ctx.t("tts.error"), description: errorText(error), variant: "error" })
       } finally {
         if (busyId() === marker) setBusyId("")
       }
@@ -241,7 +241,7 @@ export default Plugin.define({
     const playSelection = () => {
       const text = window.getSelection()?.toString().trim() ?? ""
       if (!text) {
-        ctx.toast.show({ title: ctx.t("read-aloud.empty"), variant: "default" })
+        ctx.toast.show({ title: ctx.t("tts.empty"), variant: "default" })
         return
       }
       void play({ text }, "selection")
@@ -273,7 +273,7 @@ export default Plugin.define({
           await play({ text: reply.text }, reply.id)
         }
       } catch (error) {
-        if (!autoAbort.signal.aborted) console.error("[read-aloud] auto play", error)
+        if (!autoAbort.signal.aborted) console.error("[tts] auto play", error)
       }
     })()
 
@@ -284,31 +284,31 @@ export default Plugin.define({
     }
 
     ctx.add(Command, {
-      id: "read-aloud.speak-latest",
+      id: "tts.speak-latest",
       get title() {
-        return ctx.t("read-aloud.command.latest")
+        return ctx.t("tts.command.latest")
       },
       run: () => playLatest(ctx.sessions.current()),
     })
     ctx.add(Command, {
-      id: "read-aloud.speak-selection",
+      id: "tts.speak-selection",
       get title() {
-        return ctx.t("read-aloud.command.selection")
+        return ctx.t("tts.command.selection")
       },
       keywords: "selection selection TTS speech",
       run: playSelection,
     })
     ctx.add(Command, {
-      id: "read-aloud.stop",
+      id: "tts.stop",
       get title() {
-        return ctx.t("read-aloud.command.stop")
+        return ctx.t("tts.command.stop")
       },
       run: stop,
     })
     ctx.add(Command, {
-      id: "read-aloud.open",
+      id: "tts.open",
       get title() {
-        return ctx.t("read-aloud.command.open")
+        return ctx.t("tts.command.open")
       },
       run: openPanel,
     })
@@ -321,8 +321,8 @@ export default Plugin.define({
           <button
             type="button"
             class="ra-header-button"
-            title={ctx.t("read-aloud.action.play")}
-            aria-label={ctx.t("read-aloud.action.play")}
+            title={ctx.t("tts.action.play")}
+            aria-label={ctx.t("tts.action.play")}
             onClick={() => {
               if (playingId() === "latest" && audio && !audio.paused) stop()
               else if (busyId() !== "latest") playLatest(props.session)
@@ -359,7 +359,7 @@ export default Plugin.define({
     const tab = {
       id: "replies",
       get title() {
-        return ctx.t("read-aloud.panel.title")
+        return ctx.t("tts.panel.title")
       },
       icon: "waveform" as const,
       closable: "hover" as const,
@@ -367,7 +367,7 @@ export default Plugin.define({
     }
 
     ctx.add(Panel, {
-      id: "read-aloud",
+      id: "tts",
       region: "side",
       list: () => [tab],
       render: (props: PanelPropsLike) => <PanelView host={props} />,
@@ -396,20 +396,20 @@ export default Plugin.define({
             }}
           >
             <Show when={props.host.session}>
-              <span style={{ "margin-right": "auto", opacity: 0.7 }}>{ctx.t("read-aloud.reply-count", { count: String(items().length) })}</span>
+              <span style={{ "margin-right": "auto", opacity: 0.7 }}>{ctx.t("tts.reply-count", { count: String(items().length) })}</span>
             </Show>
             <Show when={!props.host.session}>
-              <span style={{ "margin-right": "auto", opacity: 0.7 }}>{ctx.t("read-aloud.no-session")}</span>
+              <span style={{ "margin-right": "auto", opacity: 0.7 }}>{ctx.t("tts.no-session")}</span>
             </Show>
-            <ToolButton title={ctx.t("read-aloud.action.refresh")} icon="refresh" onClick={() => void refetch()} />
+            <ToolButton title={ctx.t("tts.action.refresh")} icon="refresh" onClick={() => void refetch()} />
             <Show when={playingId() || busyId()}>
-              <ToolButton title={ctx.t("read-aloud.action.stop")} icon="stop" onClick={stop} />
+              <ToolButton title={ctx.t("tts.action.stop")} icon="stop" onClick={stop} />
             </Show>
-            <ToolButton title={ctx.t("read-aloud.action.settings")} icon="settings-gear" onClick={() => ctx.layout.settings(ctx.id)} />
+            <ToolButton title={ctx.t("tts.action.settings")} icon="settings-gear" onClick={() => ctx.layout.settings(ctx.id)} />
           </div>
           <div style={{ flex: "1", "overflow-y": "auto", padding: "4px" }}>
             <Show when={!replies.loading && items().length === 0}>
-              <p style={{ padding: "12px 8px", opacity: 0.6 }}>{ctx.t("read-aloud.empty")}</p>
+              <p style={{ padding: "12px 8px", opacity: 0.6 }}>{ctx.t("tts.empty")}</p>
             </Show>
             <For each={items()}>
               {(item) => {
@@ -422,8 +422,8 @@ export default Plugin.define({
                   >
                     <button
                       type="button"
-                      title={ctx.t("read-aloud.action.play-item")}
-                      aria-label={ctx.t("read-aloud.action.play-item")}
+                      title={ctx.t("tts.action.play-item")}
+                      aria-label={ctx.t("tts.action.play-item")}
                       onClick={() => {
                         if (isPlaying() && audio && !audio.paused) stop()
                         else if (!isBusy()) void play({ text: item.text }, item.id)
@@ -577,7 +577,7 @@ export default Plugin.define({
                     {preview.length > 40 ? `${preview.slice(0, 40)}…` : preview}
                   </div>
                   <MenuRow
-                    label={ctx.t("read-aloud.context.read")}
+                    label={ctx.t("tts.context.read")}
                     hover={palette.hover}
                     onClick={() => {
                       const text = entry().text
@@ -586,7 +586,7 @@ export default Plugin.define({
                     }}
                   />
                   <MenuRow
-                    label={ctx.t("read-aloud.context.stop")}
+                    label={ctx.t("tts.context.stop")}
                     hover={palette.hover}
                     onClick={() => {
                       close()
@@ -630,9 +630,9 @@ export default Plugin.define({
     }
 
     ctx.add(SettingsPage, {
-      id: "read-aloud",
+      id: "tts",
       get title() {
-        return ctx.t("read-aloud.settings.title")
+        return ctx.t("tts.settings.title")
       },
       icon: "outline-audio",
       render: () => <SettingsView />,
@@ -643,7 +643,7 @@ export default Plugin.define({
       return (
         <div style={{ display: "flex", "flex-direction": "column", gap: "16px", padding: "4px 0", "font-size": "13px" }}>
           <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
-            <span>{ctx.t("read-aloud.settings.voice")}</span>
+            <span>{ctx.t("tts.settings.voice")}</span>
             <select
               value={prefs().voice}
               onChange={(event) => void savePrefs({ voice: event.currentTarget.value })}
@@ -656,7 +656,7 @@ export default Plugin.define({
           </label>
           <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
             <span>
-              {ctx.t("read-aloud.settings.rate")} — {rateLabel(prefs().rate)}
+              {ctx.t("tts.settings.rate")} — {rateLabel(prefs().rate)}
             </span>
             <input
               type="range"
@@ -674,7 +674,7 @@ export default Plugin.define({
               checked={prefs().autoPlay}
               onChange={(event) => void savePrefs({ autoPlay: event.currentTarget.checked })}
             />
-            <span>{ctx.t("read-aloud.settings.auto-play")}</span>
+            <span>{ctx.t("tts.settings.auto-play")}</span>
           </label>
         </div>
       )

@@ -1,13 +1,13 @@
 /**
- * Read Aloud — RPC contract shared by the server and GUI halves.
+ * TTS — RPC contract shared by the server and GUI halves.
  *
  * Plain JSON Schema literals: the server validates input and output with
  * them, and the GUI types its client proxy from the same definition.
  */
 import type { Rpc } from "@opencode/schema/rpc"
 
-export const ReadAloudRpc = {
-  id: "read-aloud",
+export const TtsRpc = {
+  id: "tts",
   methods: {
     // Synthesize speech for a message (or raw text) and return mp3 bytes.
     speak: {

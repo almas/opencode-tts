@@ -1,6 +1,6 @@
 /**
- * edge-tts: text-to-speech over the Microsoft Edge "Read Aloud" service, the
- * same voices the Read Aloud browser extension uses.
+ * edge-tts: text-to-speech over the Microsoft Edge "TTS" service, the
+ * same voices the TTS browser extension uses.
  *
  * Implemented against the service protocol directly (a WebSocket session with
  * a speech.config frame and an SSML frame, MP3 back) so the plugin needs no

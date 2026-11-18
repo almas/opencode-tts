@@ -1,12 +1,12 @@
 {
-  "name": "opencode-read-aloud",
+  "name": "opencode-tts",
   "version": "0.1.0",
   "type": "module",
-  "description": "Read Aloud 風 日本語読み上げ（edge-tts）を OpenCode Desktop に追加するプラグイン",
+  "description": "TTS 風 日本語読み上げ（edge-tts）を OpenCode Desktop に追加するプラグイン",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/almas/opencode-read-aloud.git"
+    "url": "git+https://github.com/almas/opencode-tts.git"
   },
   "keywords": [
     "opencode",
