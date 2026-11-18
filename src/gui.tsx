@@ -10,6 +10,7 @@ import { For, Show, createResource, createSignal, onCleanup, type JSX } from "so
 import { Portal } from "solid-js/web"
 import { Command, Panel, Plugin, SettingsPage, Slot, type MountedSession } from "@opencode/plugin/gui"
 import { TtsRpc, type Prefs, type ReplyItem, type SpeakResult, type VoiceItem } from "./rpc"
+import { fileLabel, previewedFilePath } from "./preview"
 
 /** The host components we use; the public types keep the registry open, so we type the calls. */
 interface IconProps {
@@ -109,6 +110,7 @@ export default Plugin.define({
       "tts.action.settings": "TTS settings",
       "tts.command.latest": "TTS: read the latest reply",
       "tts.command.selection": "TTS: read the selection",
+      "tts.command.file": "TTS: read the previewed file",
       "tts.command.stop": "TTS: stop",
       "tts.command.open": "TTS: show replies",
       "tts.empty": "No reply to read yet",
@@ -121,6 +123,11 @@ export default Plugin.define({
       "tts.settings.auto-play": "Read new replies aloud when the assistant finishes",
       "tts.context.read": "Read the selection aloud",
       "tts.context.stop": "Stop reading aloud",
+      "tts.action.file": "Read the previewed file aloud",
+      "tts.file.none": "No file is open in the preview panel",
+      "tts.file.empty": "No text to read in {file}",
+      "tts.file.reading": "Reading {file}",
+      "tts.file.failed": "Could not read {file}: {message}",
     },
     ja: {
       "tts.name": "読み上げ",
@@ -132,6 +139,7 @@ export default Plugin.define({
       "tts.action.settings": "読み上げの設定",
       "tts.command.latest": "読み上げ：最新の返信を読み上げる",
       "tts.command.selection": "読み上げ：選択した文字列を読み上げる",
+      "tts.command.file": "読み上げ：プレビュー中のファイルを読み上げる",
       "tts.command.stop": "読み上げ：停止",
       "tts.command.open": "読み上げ：返信一覧を表示",
       "tts.empty": "読み上げられる返信がありません",
@@ -144,6 +152,11 @@ export default Plugin.define({
       "tts.settings.auto-play": "アシスタントの応答完了後、新しい返信を自動で読み上げる",
       "tts.context.read": "選択した文字列を読み上げ",
       "tts.context.stop": "読み上げを停止",
+      "tts.action.file": "プレビュー中のファイルを読み上げる",
+      "tts.file.none": "プレビューパネルに開かれているファイルがありません",
+      "tts.file.empty": "{file} に読み上げられる文字列がありません",
+      "tts.file.reading": "{file} を読み上げています",
+      "tts.file.failed": "{file} を読み込めませんでした: {message}",
     },
   },
   setup(ctx) {
@@ -247,6 +260,36 @@ export default Plugin.define({
       void play({ text }, "selection")
     }
 
+    // ---------- previewed file ----------
+    // The host has no "file on screen" accessor, but its review panel keys each
+    // file tab `file://<workspace path>` (see preview.ts); we read the selected
+    // tab out of the DOM, load that file through the host's file model, and read
+    // it back. The server sanitizes and clips the text like any other input.
+    const readPreviewedFile = async () => {
+      const path = previewedFilePath()
+      const files = ctx.screen.current()?.file
+      if (!path || !files) {
+        ctx.toast.show({ title: ctx.t("tts.file.none"), variant: "default" })
+        return
+      }
+      const name = fileLabel(path)
+      let text = ""
+      try {
+        await files.sync(path, { silent: true })
+        const content = files.get(path)?.content
+        if (content?.type === "text") text = content.content
+      } catch (error) {
+        ctx.toast.show({ title: ctx.t("tts.file.failed", { file: name, message: errorText(error) }), variant: "error" })
+        return
+      }
+      if (!text.trim()) {
+        ctx.toast.show({ title: ctx.t("tts.file.empty", { file: name }), variant: "default" })
+        return
+      }
+      ctx.toast.show({ title: ctx.t("tts.file.reading", { file: name }), variant: "default" })
+      await play({ text }, "file")
+    }
+
     // ---------- auto play ----------
     // One event stream for the window: on `session.idle`, read the reply the
     // assistant just finished, if it is the session on screen and nothing is playing.
@@ -299,6 +342,14 @@ export default Plugin.define({
       run: playSelection,
     })
     ctx.add(Command, {
+      id: "tts.speak-file",
+      get title() {
+        return ctx.t("tts.command.file")
+      },
+      keywords: "file preview read aloud document",
+      run: () => void readPreviewedFile(),
+    })
+    ctx.add(Command, {
       id: "tts.stop",
       get title() {
         return ctx.t("tts.command.stop")
@@ -311,6 +362,20 @@ export default Plugin.define({
         return ctx.t("tts.command.open")
       },
       run: openPanel,
+    })
+
+    const headerStyle = (on: boolean) => ({
+      display: "inline-flex",
+      "align-items": "center",
+      "justify-content": "center",
+      width: "24px",
+      height: "24px",
+      padding: "0 6px",
+      background: "transparent",
+      border: "none",
+      "border-radius": "4px",
+      cursor: "pointer",
+      color: on ? "var(--color-text-interactive-base, inherit)" : "inherit",
     })
 
     ctx.add(Slot, {
@@ -327,21 +392,22 @@ export default Plugin.define({
               if (playingId() === "latest" && audio && !audio.paused) stop()
               else if (busyId() !== "latest") playLatest(props.session)
             }}
-            style={{
-              display: "inline-flex",
-              "align-items": "center",
-              "justify-content": "center",
-              height: "24px",
-              padding: "0 6px",
-              background: "transparent",
-              border: "none",
-              "border-radius": "4px",
-              cursor: "pointer",
-              color:
-                playingId() === "latest" || busyId() === "latest" ? "var(--color-text-interactive-base, inherit)" : "inherit",
-            }}
+            style={headerStyle(playingId() === "latest" || busyId() === "latest")}
           >
             <Icon name={busyId() === "latest" ? "refresh" : playingId() === "latest" ? "stop" : "waveform"} size="small" />
+          </button>
+          <button
+            type="button"
+            class="ra-header-button"
+            title={ctx.t("tts.action.file")}
+            aria-label={ctx.t("tts.action.file")}
+            onClick={() => {
+              if (playingId() === "file" && audio && !audio.paused) stop()
+              else if (busyId() !== "file") void readPreviewedFile()
+            }}
+            style={headerStyle(playingId() === "file" || busyId() === "file")}
+          >
+            <Icon name={busyId() === "file" ? "refresh" : playingId() === "file" ? "stop" : "file-document"} size="small" />
           </button>
         </Show>
       ),
