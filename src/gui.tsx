@@ -141,29 +141,30 @@ export default Plugin.define({
     en: {
       "tts.name": "TTS",
       "tts.panel.title": "TTS",
-      "tts.action.play-item": "Read this reply aloud",
-      "tts.action.read": "Read this reply aloud",
+      "tts.action.play-item": "Read by voice",
+      "tts.action.read": "Read by voice",
       "tts.action.read-busy": "Preparing audio…",
-      "tts.action.stop": "Stop reading aloud",
+      "tts.action.stop": "Stop voice reading",
       "tts.action.refresh": "Reload replies",
       "tts.action.settings": "TTS settings",
-      "tts.command.latest": "TTS: read the latest reply",
-      "tts.command.selection": "TTS: read the selection",
-      "tts.command.file": "TTS: read the previewed file",
+      "tts.command.latest": "TTS: read latest reply",
+      "tts.command.selection": "TTS: read selection",
+      "tts.command.file": "TTS: read open file",
       "tts.command.stop": "TTS: stop",
       "tts.command.open": "TTS: show replies",
       "tts.empty": "No reply to read yet",
-      "tts.no-session": "Open a session to read its replies aloud.",
+      "tts.no-session": "Open a session to read its replies.",
       "tts.reply-count": "{count} replies",
       "tts.error": "TTS failed",
       "tts.settings.title": "TTS",
       "tts.settings.voice": "Voice",
       "tts.settings.rate": "Speed",
-      "tts.settings.auto-play": "Read new replies aloud when the assistant finishes",
-      "tts.context.read": "Read the selection aloud",
-      "tts.context.stop": "Stop reading aloud",
-      "tts.action.file": "Read the previewed file aloud",
-      "tts.menu.readPreview": "Read the previewed file aloud",
+      "tts.settings.auto-play": "Read new replies by voice when the assistant finishes",
+      "tts.context.read": "Read selection",
+      "tts.context.stop": "Stop voice reading",
+      "tts.context.latest": "Read latest reply",
+      "tts.action.file": "Read open file",
+      "tts.menu.readPreview": "Read by voice",
       "tts.file.none": "No file is open in the preview panel",
       "tts.file.empty": "No text to read in {file}",
       "tts.file.reading": "Reading {file}",
@@ -180,7 +181,7 @@ export default Plugin.define({
       "tts.action.settings": "読み上げの設定",
       "tts.command.latest": "読み上げ：最新の返信を読み上げる",
       "tts.command.selection": "読み上げ：選択した文字列を読み上げる",
-      "tts.command.file": "読み上げ：プレビュー中のファイルを読み上げる",
+      "tts.command.file": "読み上げ：ファイルを読み上げる",
       "tts.command.stop": "読み上げ：停止",
       "tts.command.open": "読み上げ：返信一覧を表示",
       "tts.empty": "読み上げられる返信がありません",
@@ -193,8 +194,9 @@ export default Plugin.define({
       "tts.settings.auto-play": "アシスタントの応答完了後、新しい返信を自動で読み上げる",
       "tts.context.read": "選択した文字列を読み上げ",
       "tts.context.stop": "読み上げを停止",
-      "tts.action.file": "プレビュー中のファイルを読み上げる",
-      "tts.menu.readPreview": "プレビュー中のファイルを読み上げる",
+      "tts.context.latest": "最新の返信を読み上げ",
+      "tts.action.file": "ファイルを読み上げる",
+      "tts.menu.readPreview": "音声で読み上げる",
       "tts.file.none": "プレビューパネルに開かれているファイルがありません",
       "tts.file.empty": "{file} に読み上げられる文字列がありません",
       "tts.file.reading": "{file} を読み上げています",
@@ -616,8 +618,20 @@ export default Plugin.define({
         : { background: "#ffffff", color: "#232326", border: "1px solid rgba(0,0,0,0.18)", hover: "rgba(0,0,0,0.06)" }
     }
 
+    /**
+     * Floating right-click menu for the message list and the review panel. Its
+     * items follow two axes: whether text is selected (selection mode offers
+     * reading the selection; idle mode offers the latest reply or the open
+     * file) and whether audio runs (stop appears only while playing or busy).
+     */
     function SelectionMenu(): JSX.Element {
-      const [menu, setMenu] = createSignal<{ x: number; y: number; text: string; dark: boolean } | null>(null)
+      const [menu, setMenu] = createSignal<{
+        x: number
+        y: number
+        text: string
+        panel: boolean
+        dark: boolean
+      } | null>(null)
       let el: HTMLDivElement | undefined
 
       const close = () => setMenu(null)
@@ -641,13 +655,13 @@ export default Plugin.define({
         }
         if ((!inMessage && !fromPanel) || inEditor) return
         const text = window.getSelection()?.toString().trim() ?? ""
-        if (!text) return
         event.preventDefault()
         event.stopPropagation()
         setMenu({
           x: Math.max(4, Math.min(event.clientX, window.innerWidth - 280)),
           y: Math.max(4, Math.min(event.clientY, window.innerHeight - 120)),
           text,
+          panel: fromPanel,
           dark: menuPalette().background === "#26262b",
         })
       }
@@ -678,6 +692,7 @@ export default Plugin.define({
         <Show when={menu()}>
           {(entry) => {
             const palette = menuPalette()
+            const playing = () => Boolean(playingId()) || Boolean(busyId())
             const preview = entry().text.replace(/\s+/g, " ")
             return (
               <Portal mount={document.body}>
@@ -703,26 +718,57 @@ export default Plugin.define({
                   }}
                   onContextMenu={(event) => event.preventDefault()}
                 >
-                  <div style={{ padding: "4px 8px 6px", opacity: "0.55", "white-space": "nowrap", "text-overflow": "ellipsis", overflow: "hidden" }}>
-                    {preview.length > 40 ? `${preview.slice(0, 40)}…` : preview}
-                  </div>
-                  <MenuRow
-                    label={ctx.t("tts.context.read")}
-                    hover={palette.hover}
-                    onClick={() => {
-                      const text = entry().text
-                      close()
-                      void play({ text }, "selection")
-                    }}
-                  />
-                  <MenuRow
-                    label={ctx.t("tts.context.stop")}
-                    hover={palette.hover}
-                    onClick={() => {
-                      close()
-                      stop()
-                    }}
-                  />
+                  {/* Selected text: offer the selection, never the whole reply. */}
+                  <Show when={entry().text}>
+                    <div style={{ padding: "4px 8px 6px", opacity: "0.55", "white-space": "nowrap", "text-overflow": "ellipsis", overflow: "hidden" }}>
+                      {preview.length > 40 ? `${preview.slice(0, 40)}…` : preview}
+                    </div>
+                    <MenuRow
+                      label={ctx.t("tts.context.read")}
+                      hover={palette.hover}
+                      onClick={() => {
+                        const text = entry().text
+                        close()
+                        void play({ text }, "selection")
+                      }}
+                    />
+                  </Show>
+                  {/* Nothing selected: play the latest reply, or the open file in the panel. */}
+                  <Show when={!entry().text && !playing()}>
+                    <Show
+                      when={entry().panel}
+                      fallback={
+                        <MenuRow
+                          label={ctx.t("tts.context.latest")}
+                          hover={palette.hover}
+                          onClick={() => {
+                            close()
+                            playLatest(ctx.sessions.current())
+                          }}
+                        />
+                      }
+                    >
+                      <MenuRow
+                        label={ctx.t("tts.action.file")}
+                        hover={palette.hover}
+                        onClick={() => {
+                          close()
+                          void readPreviewedFile()
+                        }}
+                      />
+                    </Show>
+                  </Show>
+                  {/* The stop control exists only while audio plays or is being made. */}
+                  <Show when={playing()}>
+                    <MenuRow
+                      label={ctx.t("tts.context.stop")}
+                      hover={palette.hover}
+                      onClick={() => {
+                        close()
+                        stop()
+                      }}
+                    />
+                  </Show>
                 </div>
               </Portal>
             )
@@ -760,9 +806,9 @@ export default Plugin.define({
     }
 
     /**
-     * Injects the read-aloud button into every reply's hover toolbar (next to
-     * the copy button) and a "read the previewed file" item into the Kobalte
-     * menus opened from inside the Preview panel (tab right-click and kebab).
+     * Injects the per-message play button into every reply's hover toolbar
+     * (next to the copy button) and a play/stop item into the Kobalte menus
+     * opened from inside the Preview panel (tab right-click and kebab).
      * The SDK has no registry for either, so a MutationObserver watches the
      * host DOM; the component itself renders nothing.
      */
@@ -854,7 +900,9 @@ export default Plugin.define({
         item.removeAttribute("aria-haspopup")
         item.setAttribute("role", "menuitem")
         item.setAttribute(READ_MENU_ATTR, "")
-        item.textContent = ctx.t("tts.menu.readPreview")
+        // One item, two faces: play the open file while idle, stop while any
+        // audio plays or is being prepared.
+        item.textContent = playingId() || busyId() ? ctx.t("tts.context.stop") : ctx.t("tts.menu.readPreview")
         menu.appendChild(item)
       }
 
@@ -893,7 +941,8 @@ export default Plugin.define({
           event.preventDefault()
           event.stopPropagation()
           closeHostMenus()
-          void readPreviewedFile()
+          if (playingId() || busyId()) stop()
+          else void readPreviewedFile()
           return
         }
         const button = event.target.closest(`[${READ_BUTTON_ATTR}]`)
