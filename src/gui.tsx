@@ -2,9 +2,9 @@
  * TTS — the GUI half of the plugin.
  *
  * Talks to the server half over the `tts` RPC domain: it fetches
- * assistant replies, asks for synthesized mp3 audio, and plays it in a single
- * <audio> element. Sessions, the speech service and user preferences all live
- * on the server side; this file only draws and plays.
+ * assistant replies, asks for synthesized mp3 audio, and plays it through Web
+ * Audio (see the audio engine for why). Sessions, the speech service and user
+ * preferences all live on the server side; this file only draws and plays.
  */
 import { For, Show, createEffect, createResource, createSignal, onCleanup, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
@@ -107,10 +107,19 @@ function rateLabel(rate: number): string {
   return rate === 0 ? "1.0x" : `${(1 + rate / 100).toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}x`
 }
 
-/** Host `outline-audio` glyph, inlined so injected DOM matches the app's icons. */
+/**
+ * Speaker glyph for the read-aloud controls.
+ *
+ * Drawn here because the host icon catalog has no volume icon at all — its
+ * only audio names (`outline-audio`, `outline-wave-audio`, `waveform`) are all
+ * bar-graph glyphs — and slots the host renders itself (panel tab, settings
+ * page) only accept a catalog name, so those keep the bars.
+ * Stroke geometry follows the app's 14-unit icons: stroke-width 1, round caps.
+ */
 const READ_ICON_AUDIO =
   '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-  '<path d="M2.29546 5.62775V8.37207M5.4318 1.96875V12.0312M8.56815 4.40801V9.59173M11.7045 5.62775V8.37207" stroke="currentColor" stroke-linecap="square"/>' +
+  '<path d="M6.42 2.92 3.5 5.25H1.17v3.5h2.33l2.92 2.33z" stroke="currentColor" stroke-linejoin="round"/>' +
+  '<path d="M9.07 4.94a2.92 2.92 0 0 1 0 4.12M11.12 2.88a5.83 5.83 0 0 1 0 8.24" stroke="currentColor" stroke-linecap="round"/>' +
   "</svg>"
 
 /** Host `stop` glyph, shown while one message's audio plays. */
@@ -229,16 +238,30 @@ export default Plugin.define({
     }
 
     // ---------- audio engine ----------
-    let audio: HTMLAudioElement | undefined
+    //
+    // The clip is decoded in full and then played from an AudioBufferSourceNode.
+    // Feeding a `data:audio/mpeg` URL to an <audio> element made the first ~3
+    // seconds of every clip come out as noise while the bytes themselves
+    // measured clean — per 100 ms window, the opening of a clip is
+    // indistinguishable from its tail (same silence-then-speech ramp, same
+    // fricative bursts, peak 21273, no clipping) — so the artefact was in the
+    // element's streaming decode/priming path. Decoding the whole buffer first
+    // leaves nothing in flight when sound starts.
+    let context: AudioContext | undefined
+    let source: AudioBufferSourceNode | undefined
     let token = 0
     const [playingId, setPlayingId] = createSignal("")
     const [busyId, setBusyId] = createSignal("")
 
+    /** True only while decoded audio is running, which is what the stop controls key off. */
+    const isPlaying = () => source !== undefined
+
     const halt = () => {
-      if (audio) {
-        audio.pause()
-        audio.src = ""
-        audio = undefined
+      if (source) {
+        source.onended = null
+        source.stop()
+        source.disconnect()
+        source = undefined
       }
       setPlayingId("")
     }
@@ -249,21 +272,29 @@ export default Plugin.define({
       setBusyId("")
     }
 
-    const playAudio = (base64: string, marker: string) =>
-      new Promise<void>((resolve, reject) => {
-        const el = new Audio(`data:audio/mpeg;base64,${base64}`)
-        el.addEventListener("ended", () => {
-          if (audio === el) audio = undefined
-          if (playingId() === marker) setPlayingId("")
-        })
-        el.addEventListener("error", () => reject(new Error("audio playback failed")))
-        audio = el
-        setPlayingId(marker)
-        el.play().then(
-          () => resolve(),
-          () => reject(new Error("audio playback blocked")),
-        )
+    async function playAudio(base64: string, marker: string): Promise<void> {
+      const clip = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
+      context ??= new AudioContext()
+      // A context created without a user gesture starts suspended; onended
+      // timing and resume() rejection are the two ways autoplay fails here.
+      await context.resume().catch(() => {
+        throw new Error("audio playback blocked")
       })
+      const buffer = await context.decodeAudioData(clip.buffer as ArrayBuffer).catch(() => {
+        throw new Error("audio playback failed")
+      })
+      const node = context.createBufferSource()
+      node.buffer = buffer
+      node.connect(context.destination)
+      node.onended = () => {
+        if (source !== node) return
+        source = undefined
+        if (playingId() === marker) setPlayingId("")
+      }
+      source = node
+      setPlayingId(marker)
+      node.start()
+    }
 
     let lastReadId = ""
 
@@ -348,7 +379,7 @@ export default Plugin.define({
           if (autoAbort.signal.aborted) return
           if (event.type !== "session.idle") continue
           if (!prefs().autoPlay) continue
-          if (audio && !audio.paused) continue
+          if (isPlaying()) continue
           const current = ctx.sessions.current()
           if (!current || current.id !== event.data?.sessionID) continue
           const latest = (await rpc.latest({ sessionID: current.id })) as { reply?: ReplyItem | null }
@@ -550,7 +581,7 @@ export default Plugin.define({
                       title={ctx.t("tts.action.play-item")}
                       aria-label={ctx.t("tts.action.play-item")}
                       onClick={() => {
-                        if (isPlaying() && audio && !audio.paused) stop()
+                        if (isPlaying()) stop()
                         else if (!isBusy()) void play({ text: item.text }, item.id)
                       }}
                       style={{
@@ -567,7 +598,11 @@ export default Plugin.define({
                         color: "inherit",
                       }}
                     >
-                      <Icon name={isBusy() ? "refresh" : isPlaying() ? "stop" : "outline-audio"} size="small" />
+                      {isBusy() ? (
+                        <Icon name="refresh" size="small" />
+                      ) : (
+                        <span innerHTML={isPlaying() ? READ_ICON_STOP : READ_ICON_AUDIO} />
+                      )}
                     </button>
                     <span style={{ "line-height": "1.5", "user-select": "text" }} title={item.preview}>
                       {item.preview}

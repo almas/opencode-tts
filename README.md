@@ -54,7 +54,7 @@ The server half runs straight from `src/index.ts` (TypeScript is loaded by the h
 ```
 GUI (gui.tsx)                      Server (index.ts + tts.ts)
   ctx.client.rpc(tts/*)  ->   /api/rpc/tts/<method>
-  Audio(data:audio/mpeg)       <-   base64 MP3
+  Web Audio (decoded buffer)  <-   base64 MP3
 ```
 
 - `synthesize(text, voice, rate)` opens one WebSocket per chunk, sends the `speech.config` + SSML frames exactly like Edge does (including the Sec-MS-GEC right token, time-based SHA-256), and collects binary frames into an MP3.
