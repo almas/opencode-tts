@@ -2,7 +2,7 @@
   "name": "opencode-tts",
   "version": "0.1.0",
   "type": "module",
-  "description": "TTS 風 日本語読み上げ（edge-tts）を OpenCode Desktop に追加するプラグイン",
+  "description": "ローカル Piper エンジンの日本語読み上げを OpenCode Desktop に追加するプラグイン（完全オフライン）",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -12,7 +12,7 @@
     "opencode",
     "opencode-plugin",
     "tts",
-    "edge-tts",
+    "piper",
     "japanese"
   ],
   "exports": {

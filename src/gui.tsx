@@ -2,8 +2,8 @@
  * TTS — the GUI half of the plugin.
  *
  * Talks to the server half over the `tts` RPC domain: it fetches
- * assistant replies, asks for synthesized mp3 audio, and plays it through Web
- * Audio (see the audio engine for why). Sessions, the speech service and user
+ * assistant replies, asks for synthesized WAV audio, and plays it through Web
+ * Audio (see the audio engine for why). Sessions, the speech engine and user
  * preferences all live on the server side; this file only draws and plays.
  */
 import { For, Show, createEffect, createResource, createSignal, onCleanup, type JSX } from "solid-js"
@@ -52,7 +52,8 @@ interface RpcLike {
   setPrefs(input: Partial<Prefs>): Promise<unknown>
 }
 
-const DEFAULT_PREFS: Prefs = { voice: "ja-JP-NanamiNeural", rate: 0, autoPlay: false, keepWarm: true }
+/** `voice: ""` means "whatever the server lists first" (installed models). */
+const DEFAULT_PREFS: Prefs = { voice: "", rate: 0, autoPlay: false, keepWarm: true }
 
 /**
  * Flatten anything thrown by the SDK into readable text. The client throws
@@ -167,6 +168,7 @@ export default Plugin.define({
       "tts.settings.title": "TTS",
       "tts.settings.voice": "Voice",
       "tts.settings.rate": "Speed",
+      "tts.settings.voiceNone": "No voice installed",
       "tts.settings.auto-play": "Read new replies by voice when the assistant finishes",
       "tts.settings.keep-warm": "Keep the audio device awake (prevents the pop when playing after idle)",
       "tts.context.read": "Read selection",
@@ -199,6 +201,7 @@ export default Plugin.define({
       "tts.error": "読み上げに失敗しました",
       "tts.settings.title": "読み上げ",
       "tts.settings.voice": "音声",
+      "tts.settings.voiceNone": "音声モデル未インストール",
       "tts.settings.rate": "速度",
       "tts.settings.auto-play": "アシスタントの応答完了後、新しい返信を自動で読み上げる",
       "tts.settings.keep-warm": "オーディオデバイスを起動状態に保つ（アイドル後の再生開始時のポップノイズを防止）",
@@ -221,11 +224,15 @@ export default Plugin.define({
     // ---------- preferences ----------
     const [prefs, setPrefs] = createSignal<Prefs>({ ...DEFAULT_PREFS })
     const [voices, setVoices] = createSignal<VoiceItem[]>([])
+    const [voicesNote, setVoicesNote] = createSignal<string>("")
     void retryRpc("prefs", () => rpc.prefs({})).then((value) => {
       if (value) setPrefs(value as Prefs)
     })
     void retryRpc("voices", () => rpc.voices({})).then((value) => {
-      if (value) setVoices((value as { voices: VoiceItem[] }).voices)
+      if (!value) return
+      const result = value as { voices: VoiceItem[]; note?: string }
+      setVoices(result.voices ?? [])
+      if (result.note) setVoicesNote(result.note)
     })
 
     const savePrefs = async (patch: Partial<Prefs>) => {
@@ -1159,13 +1166,14 @@ export default Plugin.define({
     })
 
     function SettingsView() {
-      const list = () => (voices().length > 0 ? voices() : [{ id: DEFAULT_PREFS.voice, label: DEFAULT_PREFS.voice }])
+      const list = () => (voices().length > 0 ? voices() : [{ id: "", label: ctx.t("tts.settings.voiceNone") }])
       return (
         <div style={{ display: "flex", "flex-direction": "column", gap: "16px", padding: "4px 0", "font-size": "13px" }}>
           <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
             <span>{ctx.t("tts.settings.voice")}</span>
             <select
               value={prefs().voice}
+              disabled={voices().length === 0}
               onChange={(event) => void savePrefs({ voice: event.currentTarget.value })}
               style={{ "align-self": "flex-start", padding: "4px 8px", "min-width": "240px" }}
             >
@@ -1173,6 +1181,9 @@ export default Plugin.define({
                 {(voice) => <option value={voice.id}>{voice.label}</option>}
               </For>
             </select>
+            <Show when={voicesNote()}>
+              <span style={{ "max-width": "480px", color: "var(--text-weak, inherit)" }}>{voicesNote()}</span>
+            </Show>
           </label>
           <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
             <span>

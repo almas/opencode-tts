@@ -9,7 +9,7 @@ import type { Rpc } from "@opencode/schema/rpc"
 export const TtsRpc = {
   id: "tts",
   methods: {
-    // Synthesize speech for a message (or raw text) and return mp3 bytes.
+    // Synthesize speech for a message (or raw text) locally and return wav bytes.
     speak: {
       input: {
         type: "object",
@@ -22,7 +22,7 @@ export const TtsRpc = {
       output: {
         type: "object",
         properties: {
-          audio: { type: "string", description: "base64-encoded mp3" },
+          audio: { type: "string", description: "base64-encoded wav" },
           mime: { type: "string" },
           text: { type: "string" },
           truncated: { type: "boolean" },
@@ -79,7 +79,7 @@ export const TtsRpc = {
         },
       },
     },
-    // Available voices (server-side source of truth for the settings UI).
+    // Voices installed on disk, plus an explanatory note when there are none.
     voices: {
       input: { type: "object", properties: {} },
       output: {
@@ -96,6 +96,7 @@ export const TtsRpc = {
               required: ["id", "label"],
             },
           },
+          note: { type: "string" },
         },
         required: ["voices"],
       },

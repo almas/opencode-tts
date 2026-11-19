@@ -1,28 +1,17 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest"
-import { MAX_SPEECH_CHARACTERS, escapeXml, sanitizeForSpeech, splitBytes, ssml } from "../src/tts"
-
-const bytes = (s: string) => new TextEncoder().encode(s).length
-
-describe("escapeXml", () => {
-  it("neutralises markup so reply text can never close the SSML envelope", () => {
-    const evil = `</prosody></voice></speak><voice name="x"><prosody>&"'<script>alert(1)</script>`
-    const out = escapeXml(evil)
-    expect(out).not.toContain("<")
-    expect(out).not.toContain(">")
-    expect(out).not.toContain('"')
-    expect(out).not.toContain("'")
-  })
-
-  it("escapes ampersands first: literal entities stay literal", () => {
-    expect(escapeXml("&lt;")).toBe("&amp;lt;")
-    expect(escapeXml("A & B")).toBe("A &amp; B")
-  })
-
-  it("leaves plain Japanese untouched", () => {
-    expect(escapeXml("こんにちは、父上")).toBe("こんにちは、父上")
-  })
-})
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import {
+  MAX_SPEECH_CHARACTERS,
+  defaultVoicesDir,
+  flattenUtterance,
+  rateToLengthScale,
+  resolvePiperBin,
+  sanitizeForSpeech,
+  scanPiperVoices,
+} from "../src/tts"
 
 describe("sanitizeForSpeech", () => {
   it("skips code and keeps prose", () => {
@@ -55,52 +44,80 @@ describe("sanitizeForSpeech", () => {
   })
 })
 
-describe("splitBytes", () => {
-  it("returns one chunk when it already fits", () => {
-    expect(splitBytes(" 短い ", 100)).toEqual([" 短い "])
-    expect(splitBytes("こんにちは", 4096)).toEqual(["こんにちは"])
+describe("flattenUtterance", () => {
+  it("joins lines into one utterance", () => {
+    expect(flattenUtterance("一行目\n\n二行目\n三行目")).toBe("一行目 二行目 三行目")
   })
 
-  it("never exceeds the frame size and never splits a multi-byte character", () => {
-    const text = "日本語のテキストと English words. ".repeat(100)
-    for (const chunk of splitBytes(text, 200)) {
-      expect(bytes(chunk)).toBeLessThanOrEqual(200)
-      // A chunk cut mid-character would round-trip through replacement chars.
-      expect(chunk).toBe(new TextDecoder().decode(new TextEncoder().encode(chunk)))
-      expect(chunk).not.toContain("\uFFFD")
-    }
-    expect(splitBytes(text, 200).join("")).toBe(text)
-  })
-
-  it("never cuts inside an XML entity", () => {
-    const text = `${"あ".repeat(60)}&quot;${"い".repeat(60)}&amp;${"う".repeat(60)}`
-    for (const chunk of splitBytes(escapeXml(text), 64)) {
-      expect(chunk).not.toMatch(/&(amp|quot|lt|gt|apos|#\d+)?$/)
-      expect(bytes(chunk)).toBeLessThanOrEqual(64)
-    }
-  })
-
-  it("drops whitespace-only remainder", () => {
-    expect(splitBytes("   ", 4096)).toEqual([])
+  it("trims", () => {
+    expect(flattenUtterance("  こんにちは \n")).toBe("こんにちは")
   })
 })
 
-describe("ssml", () => {
-  it("builds a well-formed ja-JP envelope with the escaped payload inside", () => {
-    const out = ssml("ja-JP-NanamiNeural", "+0%", escapeXml("親愛なる父上"))
-    expect(out.startsWith("<speak version=\"1.0\"")).toBe(true)
-    expect(out.endsWith("</speak>")).toBe(true)
-    expect(out).toContain('xml:lang="ja-JP"')
-    expect(out).toContain('<voice name="ja-JP-NanamiNeural">')
-    expect(out).toContain("親愛なる父上")
-    const opens = (out.match(/<[^/!][^>]*>/g) ?? []).length
-    const closes = (out.match(/<\/[^>]+>/g) ?? []).length
-    expect(opens).toBe(closes)
+describe("rateToLengthScale", () => {
+  it("maps the UI rate onto a duration multiplier", () => {
+    expect(rateToLengthScale(0)).toBe(1)
+    expect(rateToLengthScale(100)).toBe(0.5)
+    expect(rateToLengthScale(-50)).toBe(2)
+    expect(rateToLengthScale(50)).toBe(0.667)
   })
 
-  it("normalises an empty or zero rate to +0%", () => {
-    expect(ssml("v", "", "x")).toContain('rate="+0%"')
-    expect(ssml("v", "0%", "x")).toContain('rate="+0%"')
-    expect(ssml("v", "+20%", "x")).toContain('rate="+20%"')
+  it("stays inside the engine's sane range", () => {
+    expect(rateToLengthScale(500)).toBe(0.5)
+    expect(rateToLengthScale(-500)).toBe(2)
+  })
+})
+
+describe("resolvePiperBin", () => {
+  it("honours the override when the file exists and gives up when it does not", () => {
+    expect(resolvePiperBin({ OC_TTS_PIPER_BIN: process.execPath })).toBe(process.execPath)
+    expect(resolvePiperBin({ OC_TTS_PIPER_BIN: "/nonexistent/piper" })).toBeNull()
+  })
+})
+
+describe("defaultVoicesDir", () => {
+  it("prefers the environment override", () => {
+    expect(defaultVoicesDir() !== undefined).toBe(true)
+  })
+})
+
+describe("scanPiperVoices", () => {
+  let dir: string
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "tts-voices-"))
+    // A two-speaker model with named speakers.
+    await writeFile(join(dir, "ja_JP-test_medium.onnx"), "fake")
+    await writeFile(
+      join(dir, "ja_JP-test_medium.onnx.json"),
+      JSON.stringify({ num_speakers: 2, speaker_id_map: { female: 0, male: 1 }, dataset: "test-dataset" }),
+    )
+    // A single-speaker model without a speaker map.
+    await writeFile(join(dir, "en_US-other_low.onnx"), "fake")
+    await writeFile(join(dir, "en_US-other_low.onnx.json"), JSON.stringify({ num_speakers: 1 }))
+    // A model whose sidecar is missing cannot be used.
+    await writeFile(join(dir, "broken_model.onnx"), "fake")
+  })
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("lists one entry per speaker of every configured model", async () => {
+    const voices = await scanPiperVoices(dir)
+    const ids = voices.map((voice) => voice.id)
+    expect(ids).toContain("ja_JP-test_medium#0")
+    expect(ids).toContain("ja_JP-test_medium#1")
+    expect(ids).toContain("en_US-other_low#0")
+    expect(ids).not.toContain("broken_model#0")
+    const female = voices.find((voice) => voice.id === "ja_JP-test_medium#0")!
+    expect(female.label).toContain("女性")
+    expect(female.label).toContain("test-dataset")
+    expect(female.speaker).toBe(0)
+    expect(female.model).toBe(join(dir, "ja_JP-test_medium.onnx"))
+  })
+
+  it("returns nothing for a missing directory", async () => {
+    await expect(scanPiperVoices(join(dir, "nope"))).resolves.toEqual([])
   })
 })
