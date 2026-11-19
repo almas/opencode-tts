@@ -26,7 +26,7 @@ const VOICES = [
   { id: "ja-JP-ShioriNeural", label: "Shiori（女性）" },
 ] as const
 
-const DEFAULT_PREFS: Prefs = { voice: "ja-JP-NanamiNeural", rate: 0, autoPlay: false }
+const DEFAULT_PREFS: Prefs = { voice: "ja-JP-NanamiNeural", rate: 0, autoPlay: false, keepWarm: true }
 
 function clampRate(value: unknown): number {
   const rate = typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_PREFS.rate
@@ -59,7 +59,12 @@ export default Plugin.define({
     const normalizePrefs = (stored: Partial<Prefs> | undefined): Prefs => {
       if (!stored || typeof stored !== "object") return { ...DEFAULT_PREFS }
       const voice = VOICES.some((voice) => voice.id === stored.voice) ? stored.voice! : DEFAULT_PREFS.voice
-      return { voice, rate: clampRate(stored.rate), autoPlay: stored.autoPlay === true }
+      return {
+        voice,
+        rate: clampRate(stored.rate),
+        autoPlay: stored.autoPlay === true,
+        keepWarm: typeof stored.keepWarm === "boolean" ? stored.keepWarm : DEFAULT_PREFS.keepWarm,
+      }
     }
 
     const loadPrefs = async (): Promise<Prefs> => {
@@ -136,7 +141,8 @@ export default Plugin.define({
             : current.voice
         const rate = input.rate === undefined ? current.rate : clampRate(input.rate)
         const autoPlay = input.autoPlay === undefined ? current.autoPlay : input.autoPlay === true
-        const next: Prefs = { voice, rate, autoPlay }
+        const keepWarm = typeof input.keepWarm === "boolean" ? input.keepWarm : current.keepWarm
+        const next: Prefs = { voice, rate, autoPlay, keepWarm }
         await ctx.storage.set(PREFS_KEY, { ...next })
         return next
       },

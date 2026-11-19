@@ -109,8 +109,9 @@ export const TtsRpc = {
           voice: { type: "string" },
           rate: { type: "number" },
           autoPlay: { type: "boolean" },
+          keepWarm: { type: "boolean" },
         },
-        required: ["voice", "rate", "autoPlay"],
+        required: ["voice", "rate", "autoPlay", "keepWarm"],
       },
     },
     setPrefs: {
@@ -120,6 +121,7 @@ export const TtsRpc = {
           voice: { type: "string" },
           rate: { type: "number" },
           autoPlay: { type: "boolean" },
+          keepWarm: { type: "boolean" },
         },
       },
       output: {
@@ -128,8 +130,9 @@ export const TtsRpc = {
           voice: { type: "string" },
           rate: { type: "number" },
           autoPlay: { type: "boolean" },
+          keepWarm: { type: "boolean" },
         },
-        required: ["voice", "rate", "autoPlay"],
+        required: ["voice", "rate", "autoPlay", "keepWarm"],
       },
     },
   },
@@ -146,4 +149,4 @@ export type SpeakResult = {
 }
 export type ReplyItem = { id: string; text: string; preview: string }
 export type VoiceItem = { id: string; label: string }
-export type Prefs = { voice: string; rate: number; autoPlay: boolean }
+export type Prefs = { voice: string; rate: number; autoPlay: boolean; keepWarm: boolean }

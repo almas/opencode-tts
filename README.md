@@ -10,7 +10,7 @@ TTS-style Japanese text-to-speech for **OpenCode Desktop**, built on the experim
 - **Read the previewed file aloud**: a header button and a command read whatever file the review panel has open (Markdown and code are cleaned up server-side before synthesis, and very long files are clipped).
 - **Edge neural voices** (e.g. `ja-JP-NanamiNeural`, `ja-JP-KeitaNeural`, plus the full edge-tts voice list) streamed as MP3 through a direct `speech.platform.bing.com` WebSocket connection. **No Python and no `edge-tts` package required** — the Sec-MS-GEC token logic was ported from [msedge-tts](https://github.com/andresayac/msedge-tts) (MIT, attribution kept in `src/tts.ts`).
 - **Long text is chunked** to fit one SSML frame each and stitched into a single MP3.
-- **Preferences persisted server-side** (`ctx.storage`, key `tts/prefs`): voice, speaking rate (-50%..+50%), auto-play of new assistant messages.
+- **Preferences persisted server-side** (`ctx.storage`, key `tts/prefs`): voice, speaking rate (-50%..+50%), auto-play of new assistant messages, keep-warm.
 - Player panel with play/pause/stop and progress, header button, commands (`/tts`), and English/Japanese strings.
 
 ## Install
@@ -62,6 +62,14 @@ GUI (gui.tsx)                      Server (index.ts + tts.ts)
 - The context menu: a capture-phase `contextmenu` listener finds the current selection and renders a Portal menu with 「選択した文字列を読み上げ」.
 - The previewed file: each tab of the host's review panel carries `data-value="file://<workspace path>"` and the selected one is marked, so the plugin reads that path from the DOM, loads the file through `ctx.screen.current().file` and speaks it like any other text.
 
+## Playback pops after idle (and how they are handled)
+
+Some machines power down the audio output device after a few quiet seconds, and the device clicks or crackles while it powers back up — so the first playback after any gap (not just the first of the session) can start with a pop. The plugin defends in three layers:
+
+- Every clip gets a ~120 ms silent lead-in, so any residual transient plays under silence.
+- If nothing has been played for over 3 s, a short silent beat wakes the device first and playback starts after a brief settle delay.
+- By default (`keepWarm`, on the settings page) a 20 ms silent heartbeat every 2 s keeps the device awake while the app is open, so cold starts rarely happen at all. Turn it off if you would rather the device stay suspended (e.g. to save power on speakers that draw attention when awake); the wake-before-play path then covers every cold start.
+
 ## 日本語
 
 OpenCode Desktop に日本語読み上げ (TTS) を追加するプラグインです。
@@ -76,6 +84,7 @@ OpenCode Desktop に日本語読み上げ (TTS) を追加するプラグイン�
 
 - 合成には `speech.platform.bing.com` へのアウトバウンド接続が必要です（読み上げたいテキストのみ送信されます）。
 - xrdp 越しセッションではサウンド再生先が無いことがあり、再生テストは実機で行ってください。
+- 一部の機種ではスピーカー出力が数秒の無音で電源オフになり、復帰時のポップノイズが再生頭に載ることがあります。このプラグインは無音の前置き・アイドル検出による再生前のウェイクアップ・既定で有効な「オーディオデバイスを起動状態に保つ」心拍（2秒間隔の無音ビート）の三段構えでこれを吸収します。心拍が不要な場合は設定画面でオフにできます（オフでも再生前にウェイクアップが入ります）。
 
 ## Security notes
 

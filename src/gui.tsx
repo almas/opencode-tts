@@ -52,7 +52,7 @@ interface RpcLike {
   setPrefs(input: Partial<Prefs>): Promise<unknown>
 }
 
-const DEFAULT_PREFS: Prefs = { voice: "ja-JP-NanamiNeural", rate: 0, autoPlay: false }
+const DEFAULT_PREFS: Prefs = { voice: "ja-JP-NanamiNeural", rate: 0, autoPlay: false, keepWarm: true }
 
 /**
  * Flatten anything thrown by the SDK into readable text. The client throws
@@ -168,6 +168,7 @@ export default Plugin.define({
       "tts.settings.voice": "Voice",
       "tts.settings.rate": "Speed",
       "tts.settings.auto-play": "Read new replies by voice when the assistant finishes",
+      "tts.settings.keep-warm": "Keep the audio device awake (prevents the pop when playing after idle)",
       "tts.context.read": "Read selection",
       "tts.context.stop": "Stop voice reading",
       "tts.context.latest": "Read latest reply",
@@ -200,6 +201,7 @@ export default Plugin.define({
       "tts.settings.voice": "音声",
       "tts.settings.rate": "速度",
       "tts.settings.auto-play": "アシスタントの応答完了後、新しい返信を自動で読み上げる",
+      "tts.settings.keep-warm": "オーディオデバイスを起動状態に保つ（アイドル後の再生開始時のポップノイズを防止）",
       "tts.context.read": "選択した文字列を読み上げ",
       "tts.context.stop": "読み上げを停止",
       "tts.context.latest": "最新の返信を読み上げ",
@@ -250,8 +252,40 @@ export default Plugin.define({
     let context: AudioContext | undefined
     let source: AudioBufferSourceNode | undefined
     let token = 0
+    // When the output device last rendered anything (real clip or silent beat).
+    // Output devices here power down after a few idle seconds and pop while
+    // powering back up, so this timestamp decides whether a clip needs waking
+    // first — a long gap means the device is almost certainly cold again, even
+    // much later in the session.
+    let lastAudioAt = 0
     const [playingId, setPlayingId] = createSignal("")
     const [busyId, setBusyId] = createSignal("")
+
+    /** Gap past which the device is treated as powered down before playback. */
+    const WAKE_GAP_MS = 3000
+    /** Silent samples always prepended to a clip, absorbing any residual transient. */
+    const LEAD_IN_SEC = 0.12
+    /** Length of the silent beat used to wake a cold device, plus settle margin. */
+    const WAKE_BEAT_SEC = 0.25
+    const WAKE_SETTLE_MS = 150
+    /** Keep-alive beat interval (device suspension sits above this cadence). */
+    const KEEP_ALIVE_MS = 2000
+
+    /** Render `seconds` of silence to the destination; resolves when done. */
+    const silentBeat = async (active: AudioContext, seconds: number): Promise<void> => {
+      const node = active.createBufferSource()
+      node.buffer = active.createBuffer(1, Math.max(1, Math.round(active.sampleRate * seconds)), active.sampleRate)
+      node.connect(active.destination)
+      const done = new Promise<void>((resolve) => {
+        node.onended = () => {
+          node.disconnect()
+          resolve()
+        }
+      })
+      node.start()
+      lastAudioAt = Date.now()
+      await done
+    }
 
     /** True only while decoded audio is running, which is what the stop controls key off. */
     const isPlaying = () => source !== undefined
@@ -273,6 +307,7 @@ export default Plugin.define({
     }
 
     async function playAudio(base64: string, marker: string): Promise<void> {
+      const myToken = token
       const clip = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
       context ??= new AudioContext()
       // A context created without a user gesture starts suspended; onended
@@ -280,29 +315,53 @@ export default Plugin.define({
       await context.resume().catch(() => {
         throw new Error("audio playback blocked")
       })
-      const buffer = await context.decodeAudioData(clip.buffer as ArrayBuffer).catch(() => {
+      const active = context
+      const idleMs = Date.now() - lastAudioAt
+      if (lastAudioAt && idleMs > WAKE_GAP_MS) {
+        // The device has been quiet long enough to power down: wake it with a
+        // silent beat so the power-on pop lands on silence, then let it settle
+        // before the real clip starts. ~400 ms, once, only after a long gap.
+        console.info(`[tts] audio output idle ${Math.round(idleMs / 1000)}s — waking device before playback`)
+        await silentBeat(active, WAKE_BEAT_SEC).catch(() => {})
+        await new Promise((resolve) => setTimeout(resolve, WAKE_SETTLE_MS))
+        if (myToken !== token) return
+        await active.resume().catch(() => {})
+      }
+      const buffer = await active.decodeAudioData(clip.buffer as ArrayBuffer).catch(() => {
         throw new Error("audio playback failed")
       })
-      const node = context.createBufferSource()
-      node.buffer = buffer
-      node.connect(context.destination)
+      // Short silent lead-in on every clip as insurance for gaps the idle
+      // check can't see (suspension mid-request, throttled keep-alive while a
+      // window is hidden): whatever transient is left plays under silence.
+      const lead = Math.max(0, Math.round(active.sampleRate * LEAD_IN_SEC))
+      const padded = active.createBuffer(buffer.numberOfChannels, lead + buffer.length, buffer.sampleRate)
+      for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+        padded.getChannelData(channel).set(buffer.getChannelData(channel), lead)
+      }
+      const node = active.createBufferSource()
+      node.buffer = padded
+      node.connect(active.destination)
       node.onended = () => {
         if (source !== node) return
         source = undefined
+        lastAudioAt = Date.now()
         if (playingId() === marker) setPlayingId("")
       }
       source = node
       setPlayingId(marker)
+      lastAudioAt = Date.now()
       node.start()
     }
 
-    // ---------- engine warm-up ----------
-    // Only the very first playback crackled: on this machine the audio output
-    // device emits a pop while it powers on, and that glitch landed on the
-    // opening of the first clip (later clips start clean because the device is
-    // already running). Absorb it with a few ms of silence — attempted at
-    // plugin load, and again on the first user gesture in case the autoplay
-    // policy kept the context suspended until then.
+    // ---------- engine warm-up and keep-warm ----------
+    // On this machine the output device emits a pop while it powers on. That
+    // used to hit the session's very first clip; with the load-time warm-up in
+    // place the pop instead moved to whichever clip played after an idle gap,
+    // because the device suspends a few quiet seconds later and powers back
+    // up the same way. Three layers now: silence at load/first gesture primes
+    // the engine, a 20 ms silent heartbeat every couple of seconds keeps the
+    // device from powering down at all while the app is open (the keepWarm
+    // setting), and playAudio() wakes a cold device and pads every clip.
     const warmUp = () => {
       try {
         context ??= new AudioContext()
@@ -314,11 +373,7 @@ export default Plugin.define({
         .resume()
         .then(() => {
           if (active.state !== "running") return
-          const silence = active.createBuffer(1, Math.max(1, Math.floor(active.sampleRate / 50)), active.sampleRate)
-          const node = active.createBufferSource()
-          node.buffer = silence
-          node.connect(active.destination)
-          node.start()
+          return silentBeat(active, 0.02).catch(() => {})
         })
         .catch(() => {
           /* stay suspended; the next gesture or playAudio() retries */
@@ -331,6 +386,31 @@ export default Plugin.define({
     for (const event of ["pointerdown", "keydown"] as const) {
       window.addEventListener(event, warmUp, { once: true })
     }
+
+    // The keep-warm heartbeat, re-armed whenever the setting flips. If the
+    // loop stalls (hidden-window timer throttling) or is switched off, the
+    // playAudio() idle check still wakes the device, so this is an
+    // optimisation rather than the only guard.
+    let keepAliveTimer: number | undefined
+    createEffect(() => {
+      const on = prefs().keepWarm
+      if (keepAliveTimer !== undefined) {
+        window.clearInterval(keepAliveTimer)
+        keepAliveTimer = undefined
+      }
+      if (!on) return
+      keepAliveTimer = window.setInterval(() => {
+        if (!context) {
+          warmUp()
+          return
+        }
+        if (context.state !== "running" || source) return
+        void silentBeat(context, 0.02).catch(() => {})
+      }, KEEP_ALIVE_MS)
+    })
+    onCleanup(() => {
+      if (keepAliveTimer !== undefined) window.clearInterval(keepAliveTimer)
+    })
 
     let lastReadId = ""
 
@@ -1115,6 +1195,14 @@ export default Plugin.define({
               onChange={(event) => void savePrefs({ autoPlay: event.currentTarget.checked })}
             />
             <span>{ctx.t("tts.settings.auto-play")}</span>
+          </label>
+          <label style={{ display: "flex", gap: "8px", "align-items": "center" }}>
+            <input
+              type="checkbox"
+              checked={prefs().keepWarm}
+              onChange={(event) => void savePrefs({ keepWarm: event.currentTarget.checked })}
+            />
+            <span>{ctx.t("tts.settings.keep-warm")}</span>
           </label>
         </div>
       )
