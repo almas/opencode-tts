@@ -8,13 +8,14 @@
  * `OC_TTS_PIPER_BIN`). Each `*.onnx` model with its `*.onnx.json` sidecar is
  * offered as one voice per speaker the model defines.
  *
- * The old implementation spoke through Microsoft's online Edge service; that
- * whole protocol was removed in favour of this offline engine.
+ * The optional online alternative (Microsoft Edge voices) lives in `edge.ts`
+ * and is only used when the user selects it in settings; this file stays the
+ * default and needs no network.
  */
 import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
-import { readdir, readFile } from "node:fs/promises"
-import { homedir } from "node:os"
+import { readdir, readFile, unlink } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
 /** Replies longer than this are cut at a sentence; anything more is tedious. */
@@ -152,8 +153,14 @@ export type SynthesizeOptions = {
 }
 
 /**
- * Runs one piper synthesis and returns the WAV bytes it writes to stdout.
+ * Runs one piper synthesis and returns the WAV bytes it produced.
  * Rejects with piper's last stderr line so the GUI can show something useful.
+ *
+ * The audio is requested through `--output_file`: without it the piper CLI
+ * tries to play the result itself, which fails on a headless machine (it
+ * warns about a missing ffplay and exits non-zero after dropping `output.wav`
+ * into its working directory), and a plugin has no business grabbing the
+ * audio device during synthesis anyway — the GUI plays everything.
  */
 export function synthesizeWithPiper(
   bin: string,
@@ -167,6 +174,7 @@ export function synthesizeWithPiper(
       reject(new Error("empty text"))
       return
     }
+    const outPath = join(tmpdir(), `opencode-tts-${process.pid}-${Math.random().toString(36).slice(2)}.wav`)
     const args = [
       "-m",
       voice.model,
@@ -176,6 +184,8 @@ export function synthesizeWithPiper(
       String(lengthScale),
       "--sentence-silence",
       "0.4",
+      "--output_file",
+      outPath,
     ]
     const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] })
     const chunks: Buffer[] = []
@@ -204,17 +214,28 @@ export function synthesizeWithPiper(
       clearTimeout(timer)
       reject(error)
     })
-    child.on("close", (code) => {
+    const finish = async (code: number | null) => {
       clearTimeout(timer)
       options.signal?.removeEventListener("abort", abort)
-      const audio = Buffer.concat(chunks)
-      if (code === 0 && audio.length > 44) {
+      let audio = Buffer.alloc(0)
+      if (code === 0) {
+        try {
+          audio = await readFile(outPath)
+        } catch {
+          audio = Buffer.concat(chunks) // older piper builds print the WAV to stdout
+        }
+      }
+      void unlink(outPath).catch(() => {})
+      if (audio.length > 44) {
         resolve(new Uint8Array(audio))
         return
       }
+      // With --output_file piper may still print warnings to stderr; only
+      // surface them when there is genuinely no audio to return.
       const detail = stderr.trim().split("\n").filter(Boolean).pop() ?? `exit ${code}`
       reject(new Error(detail))
-    })
+    }
+    child.on("close", (code) => void finish(code))
     child.stdin.write(text)
     child.stdin.write("\n")
     child.stdin.end()

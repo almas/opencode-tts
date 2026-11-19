@@ -2,12 +2,13 @@
  * TTS — the server half of the plugin.
  *
  * Registers the `tts` RPC domain: it fetches assistant replies from the
- * session, sanitizes them for speech, synthesizes WAV locally with Piper,
- * and keeps user preferences in plugin storage. Nothing leaves this
- * machine. The GUI half knows nothing about sessions or the engine.
+ * session, sanitizes them for speech, synthesizes audio with the selected
+ * engine (Piper locally by default; the online Edge engine only when the
+ * user opts in), and keeps user preferences in plugin storage. The GUI half
+ * knows nothing about sessions or the engines.
  */
 import { Plugin } from "@opencode/plugin"
-import { TtsRpc, type Prefs, type ReplyItem, type SpeakInput, type SpeakResult } from "./rpc"
+import { TtsRpc, type Prefs, type ReplyItem, type SpeakInput, type SpeakResult, type TtsEngine } from "./rpc"
 import {
   MAX_SPEECH_CHARACTERS,
   defaultVoicesDir,
@@ -19,6 +20,7 @@ import {
   synthesizeWithPiper,
   type PiperVoice,
 } from "./tts"
+import { EDGE_VOICES, rateToProsody, synthesize as synthesizeWithEdge } from "./edge"
 
 const PREFS_KEY = "tts/prefs"
 /** Storage key used before the plugin was renamed; preferences migrate on first load. */
@@ -26,19 +28,28 @@ const LEGACY_PREFS_KEY = "read-aloud/prefs"
 const MAX_REPLIES = 20
 const PREVIEW_CHARS = 90
 
-const DEFAULT_PREFS: Prefs = { voice: "", rate: 0, autoPlay: false, keepWarm: true }
+const DEFAULT_PREFS: Prefs = { engine: "piper", voice: "", rate: 0, autoPlay: false, keepWarm: true }
 
 function clampRate(value: unknown): number {
   const rate = typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_PREFS.rate
   return Math.max(-50, Math.min(50, Math.round(rate)))
 }
 
-/** What the engine is missing, in Japanese, with the exact fix command. */
+function toEngine(value: unknown): TtsEngine | undefined {
+  return value === "piper" || value === "edge" ? value : undefined
+}
+
+/** What the piper engine is missing, in Japanese, with the exact fix command. */
 function engineHint(): string {
   return (
     `Piper が未設定です。インストール: uv tool install piper-tts --with pyopenjtalk-plus; ` +
     `音声モデルは ${defaultVoicesDir()} に .onnx と .onnx.json を配置してください（README 参照）`
   )
+}
+
+/** What an online-engine failure looks like to the user, in Japanese. */
+function edgeHint(): string {
+  return "オンライン音声（Microsoft Edge）の取得に失敗しました。ネットワークを確認するか、設定でローカル音声（Piper）に戻ってください"
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -62,14 +73,22 @@ export default Plugin.define({
   async setup(ctx) {
     const normalizePrefs = (stored: Partial<Prefs> | undefined): Prefs => {
       if (!stored || typeof stored !== "object") return { ...DEFAULT_PREFS }
-      // Voice ids are piper models on disk, so they cannot be validated here;
-      // speak() resolves whatever is stored against the installed voices.
-      // Old edge-tts ids (ja-JP-*) no longer mean anything and reset to default.
+      const engine = toEngine(stored.engine) ?? DEFAULT_PREFS.engine
+      const storedVoice = typeof stored.voice === "string" ? stored.voice : ""
+      // Engine-specific voice validation: an online voice has to be one of the
+      // curated ids, piper voices are models on disk that speak() resolves
+      // against what is installed. A piper voice that still carries an old
+      // edge-tts id (ja-JP-*) no longer means anything and resets to default.
       const voice =
-        typeof stored.voice === "string" && stored.voice && !stored.voice.startsWith("ja-JP-")
-          ? stored.voice
-          : DEFAULT_PREFS.voice
+        engine === "edge"
+          ? EDGE_VOICES.some((candidate) => candidate.id === storedVoice)
+            ? storedVoice
+            : ""
+          : storedVoice && !storedVoice.startsWith("ja-JP-")
+            ? storedVoice
+            : ""
       return {
+        engine,
         voice,
         rate: clampRate(stored.rate),
         autoPlay: stored.autoPlay === true,
@@ -136,10 +155,26 @@ export default Plugin.define({
         if (!text) return { audio: "", mime: "audio/wav", truncated: false, ...(messageID ? { messageID } : {}) }
         const truncated = text.length > MAX_SPEECH_CHARACTERS
         const clipped = truncated ? text.slice(0, MAX_SPEECH_CHARACTERS) : text
+        const utterance = flattenUtterance(clipped)
+        if (prefs.engine === "edge") {
+          const voice = EDGE_VOICES.some((candidate) => candidate.id === prefs.voice)
+            ? prefs.voice
+            : EDGE_VOICES[0].id
+          try {
+            const bytes = await synthesizeWithEdge(utterance, voice, rateToProsody(prefs.rate), {
+              signal: control.signal,
+            })
+            return { audio: toBase64(bytes), mime: "audio/mpeg", truncated, ...(messageID ? { messageID } : {}) }
+          } catch (error) {
+            if (control.signal.aborted) throw error
+            const detail = error instanceof Error ? error.message : String(error)
+            throw new Error(`${detail} — ${edgeHint()}`, { cause: error })
+          }
+        }
         const bin = resolvePiperBin()
         const voice = bin ? await pickVoice(prefs.voice) : undefined
         if (!bin || !voice) throw new Error(engineHint())
-        const bytes = await synthesizeWithPiper(bin, voice, rateToLengthScale(prefs.rate), flattenUtterance(clipped), {
+        const bytes = await synthesizeWithPiper(bin, voice, rateToLengthScale(prefs.rate), utterance, {
           signal: control.signal,
         })
         return { audio: toBase64(bytes), mime: "audio/wav", truncated, ...(messageID ? { messageID } : {}) }
@@ -155,6 +190,15 @@ export default Plugin.define({
         return latest ? { reply: latest } : {}
       },
       voices: async () => {
+        const prefs = await loadPrefs()
+        if (prefs.engine === "edge") {
+          // Static curated list: honest labels without a network call, with a
+          // note so the privacy trade-off is visible where the choice is made.
+          return {
+            voices: EDGE_VOICES.map(({ id, label }) => ({ id, label })),
+            note: "オンライン音声: 読み上げ時にテキストが Microsoft のサービスへ送信されます。",
+          }
+        }
         const voices = await installedVoices()
         if (voices.length > 0) return { voices: voices.map(({ id, label }) => ({ id, label })) }
         return { voices: [], note: engineHint() }
@@ -163,12 +207,15 @@ export default Plugin.define({
       setPrefs: async (raw) => {
         const input = (raw ?? {}) as Partial<Prefs>
         const current = await loadPrefs()
-        const voice =
-          typeof input.voice === "string" && input.voice ? input.voice : current.voice
+        const engine = toEngine(input.engine) ?? current.engine
+        // Voices are engine-specific: switching engines drops the old pick.
+        const switched = engine !== current.engine
+        let voice = input.voice === undefined ? (switched ? "" : current.voice) : input.voice
+        if (engine === "edge" && voice && !EDGE_VOICES.some((candidate) => candidate.id === voice)) voice = ""
         const rate = input.rate === undefined ? current.rate : clampRate(input.rate)
         const autoPlay = input.autoPlay === undefined ? current.autoPlay : input.autoPlay === true
         const keepWarm = typeof input.keepWarm === "boolean" ? input.keepWarm : current.keepWarm
-        const next: Prefs = { voice, rate, autoPlay, keepWarm }
+        const next: Prefs = { engine, voice, rate, autoPlay, keepWarm }
         await ctx.storage.set(PREFS_KEY, { ...next })
         return next
       },
