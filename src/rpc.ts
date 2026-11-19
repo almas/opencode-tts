@@ -9,7 +9,8 @@ import type { Rpc } from "@opencode/schema/rpc"
 export const TtsRpc = {
   id: "tts",
   methods: {
-    // Synthesize speech for a message (or raw text) locally and return wav bytes.
+    // Synthesize speech for a message (or raw text) and return audio bytes:
+    // WAV from the local Piper engine (default), MP3 from the optional online one.
     speak: {
       input: {
         type: "object",
@@ -22,7 +23,7 @@ export const TtsRpc = {
       output: {
         type: "object",
         properties: {
-          audio: { type: "string", description: "base64-encoded wav" },
+          audio: { type: "string", description: "base64-encoded audio (wav or mp3)" },
           mime: { type: "string" },
           text: { type: "string" },
           truncated: { type: "boolean" },
@@ -79,7 +80,8 @@ export const TtsRpc = {
         },
       },
     },
-    // Voices installed on disk, plus an explanatory note when there are none.
+    // Voices for the selected engine: piper scans the models on disk, the
+    // online engine returns its curated list, plus a note where it helps.
     voices: {
       input: { type: "object", properties: {} },
       output: {
@@ -107,18 +109,20 @@ export const TtsRpc = {
       output: {
         type: "object",
         properties: {
+          engine: { type: "string", enum: ["piper", "edge"] },
           voice: { type: "string" },
           rate: { type: "number" },
           autoPlay: { type: "boolean" },
           keepWarm: { type: "boolean" },
         },
-        required: ["voice", "rate", "autoPlay", "keepWarm"],
+        required: ["engine", "voice", "rate", "autoPlay", "keepWarm"],
       },
     },
     setPrefs: {
       input: {
         type: "object",
         properties: {
+          engine: { type: "string", enum: ["piper", "edge"] },
           voice: { type: "string" },
           rate: { type: "number" },
           autoPlay: { type: "boolean" },
@@ -128,12 +132,13 @@ export const TtsRpc = {
       output: {
         type: "object",
         properties: {
+          engine: { type: "string", enum: ["piper", "edge"] },
           voice: { type: "string" },
           rate: { type: "number" },
           autoPlay: { type: "boolean" },
           keepWarm: { type: "boolean" },
         },
-        required: ["voice", "rate", "autoPlay", "keepWarm"],
+        required: ["engine", "voice", "rate", "autoPlay", "keepWarm"],
       },
     },
   },
@@ -150,4 +155,12 @@ export type SpeakResult = {
 }
 export type ReplyItem = { id: string; text: string; preview: string }
 export type VoiceItem = { id: string; label: string }
-export type Prefs = { voice: string; rate: number; autoPlay: boolean; keepWarm: boolean }
+/** `"piper"` is fully local (the default); `"edge"` is the optional online service. */
+export type TtsEngine = "piper" | "edge"
+export type Prefs = {
+  engine: TtsEngine
+  voice: string
+  rate: number
+  autoPlay: boolean
+  keepWarm: boolean
+}

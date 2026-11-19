@@ -9,7 +9,7 @@
 import { For, Show, createEffect, createResource, createSignal, onCleanup, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { Command, Panel, Plugin, SettingsPage, Slot, type MountedSession } from "@opencode/plugin/gui"
-import { TtsRpc, type Prefs, type ReplyItem, type SpeakResult, type VoiceItem } from "./rpc"
+import { TtsRpc, type Prefs, type ReplyItem, type SpeakResult, type TtsEngine, type VoiceItem } from "./rpc"
 import { fileLabel, previewedFilePath } from "./preview"
 import {
   COPY_WRAPPER_SELECTOR,
@@ -53,7 +53,7 @@ interface RpcLike {
 }
 
 /** `voice: ""` means "whatever the server lists first" (installed models). */
-const DEFAULT_PREFS: Prefs = { voice: "", rate: 0, autoPlay: false, keepWarm: true }
+const DEFAULT_PREFS: Prefs = { engine: "piper", voice: "", rate: 0, autoPlay: false, keepWarm: true }
 
 /**
  * Flatten anything thrown by the SDK into readable text. The client throws
@@ -166,6 +166,9 @@ export default Plugin.define({
       "tts.reply-count": "{count} replies",
       "tts.error": "TTS failed",
       "tts.settings.title": "TTS",
+      "tts.settings.engine": "Engine",
+      "tts.settings.engine.local": "Local — Piper (no network)",
+      "tts.settings.engine.online": "Online — Microsoft Edge voices",
       "tts.settings.voice": "Voice",
       "tts.settings.rate": "Speed",
       "tts.settings.voiceNone": "No voice installed",
@@ -200,6 +203,9 @@ export default Plugin.define({
       "tts.reply-count": "{count} 件の返信",
       "tts.error": "読み上げに失敗しました",
       "tts.settings.title": "読み上げ",
+      "tts.settings.engine": "エンジン",
+      "tts.settings.engine.local": "ローカル — Piper（ネットワーク不要）",
+      "tts.settings.engine.online": "オンライン — Microsoft Edge 音声",
       "tts.settings.voice": "音声",
       "tts.settings.voiceNone": "音声モデル未インストール",
       "tts.settings.rate": "速度",
@@ -228,16 +234,27 @@ export default Plugin.define({
     void retryRpc("prefs", () => rpc.prefs({})).then((value) => {
       if (value) setPrefs(value as Prefs)
     })
-    void retryRpc("voices", () => rpc.voices({})).then((value) => {
-      if (!value) return
-      const result = value as { voices: VoiceItem[]; note?: string }
-      setVoices(result.voices ?? [])
-      if (result.note) setVoicesNote(result.note)
-    })
+    const loadVoices = () => {
+      void retryRpc("voices", () => rpc.voices({})).then((value) => {
+        if (!value) return
+        const result = value as { voices: VoiceItem[]; note?: string }
+        setVoices(result.voices ?? [])
+        setVoicesNote(result.note ?? "")
+      })
+    }
+    loadVoices()
 
     const savePrefs = async (patch: Partial<Prefs>) => {
+      const engineChanged = patch.engine !== undefined && patch.engine !== prefs().engine
       const next = { ...prefs(), ...patch }
       setPrefs(next)
+      if (engineChanged) {
+        // Voices belong to an engine: the list (and its note) is the server's,
+        // so drop the stale one and refetch alongside the preference write.
+        setVoices([])
+        setVoicesNote("")
+        loadVoices()
+      }
       try {
         setPrefs((await rpc.setPrefs(next)) as Prefs)
       } catch (error) {
@@ -1169,6 +1186,17 @@ export default Plugin.define({
       const list = () => (voices().length > 0 ? voices() : [{ id: "", label: ctx.t("tts.settings.voiceNone") }])
       return (
         <div style={{ display: "flex", "flex-direction": "column", gap: "16px", padding: "4px 0", "font-size": "13px" }}>
+          <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
+            <span>{ctx.t("tts.settings.engine")}</span>
+            <select
+              value={prefs().engine}
+              onChange={(event) => void savePrefs({ engine: event.currentTarget.value as TtsEngine, voice: "" })}
+              style={{ "align-self": "flex-start", padding: "4px 8px", "min-width": "240px" }}
+            >
+              <option value="piper">{ctx.t("tts.settings.engine.local")}</option>
+              <option value="edge">{ctx.t("tts.settings.engine.online")}</option>
+            </select>
+          </label>
           <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
             <span>{ctx.t("tts.settings.voice")}</span>
             <select

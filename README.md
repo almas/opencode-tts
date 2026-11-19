@@ -1,12 +1,13 @@
 # opencode-tts
 
-Japanese text-to-speech for **OpenCode Desktop**, built on the experimental GUI plugin API. Select text, right-click, and listen — **fully offline**: synthesis runs on your machine with [Piper](https://github.com/rhasspy/piper), no cloud service, no account, no network calls.
+Japanese text-to-speech for **OpenCode Desktop**, built on the experimental GUI plugin API. Select text, right-click, and listen — **offline by default**: synthesis runs on your machine with [Piper](https://github.com/rhasspy/piper), no account and no network calls. An optional [Microsoft Edge voices](https://learn.microsoft.com/azure/ai-services/speech-service/language-support) engine can be enabled in Settings if you prefer the online service.
 
 日本語版: [下の「日本語」セクション](#日本語) を参照してください。
 
 ## Features
 
-- **100% local synthesis** — the [Piper](https://github.com/rhasspy/piper) neural engine runs as a child process and speaks through a voice model on disk. Nothing you read aloud ever leaves the machine.
+- **Local synthesis by default** — the [Piper](https://github.com/rhasspy/piper) neural engine runs as a child process and speaks through a voice model on disk. Nothing you read aloud leaves the machine.
+- **Optional online engine (opt-in)** — pick "Online — Microsoft Edge voices" in Settings to speak through Microsoft's neural voices over a built-in, dependency-free client (MP3 replies). Off unless you select it; the settings page reminds you that text is sent to the service while it is active.
 - **Right-click "選択した文字列を読み上げ"** (read selected text) on any selection in the chat view, via a floating context menu (the host has no plugin context-menu API yet, so the plugin renders its own Portal menu).
 - **Read the previewed file aloud**: a header button and a command read whatever file the review panel has open (Markdown and code are cleaned up server-side before synthesis, and very long files are clipped).
 - **Voices are discovered from disk** — every `*.onnx` model (with its `*.onnx.json` sidecar) in the voices directory is offered in the settings page, one entry per speaker the model defines.
@@ -40,7 +41,7 @@ curl -LO "$base/ja_JP-hi_fi_captain-medium.onnx"
 curl -LO "$base/ja_JP-hi_fi_captain-medium.onnx.json"
 ```
 
-This download is a one-time setup step you run yourself; the plugin itself never touches the network.
+This download is a one-time setup step you run yourself; the default engine never touches the network. (The optional online Edge engine needs no setup at all — just select it in Settings.)
 
 ### 3. Plugin registration
 
@@ -78,15 +79,17 @@ The server half runs straight from `src/index.ts` (TypeScript is loaded by the h
 ## How it works
 
 ```
-GUI (gui.tsx)                      Server (index.ts + tts.ts)
+GUI (gui.tsx)                      Server (index.ts)
   ctx.client.rpc(tts/*)  ->   /api/rpc/tts/<method>
-  Web Audio (decoded buffer)  <-   base64 WAV
+  Web Audio (decoded buffer)  <-   base64 WAV (piper) or MP3 (edge)
 ```
 
-- `synthesizeWithPiper(...)` spawns `piper -m <model> -s <speaker> --length-scale <n>`, writes the text on stdin, and collects the WAV it writes to stdout (180 s timeout, abortable via the RPC control signal).
-- The UI's rate percent maps to piper's `--length-scale` as `1 / (1 + rate/100)`.
+- The `speak` RPC dispatches on `prefs.engine`:
+  - **piper** (`tts.ts`): spawns `piper -m <model> -s <speaker> --length-scale <n> --output_file <tmp>`, writes the text on stdin, and reads back the WAV (180 s timeout, abortable via the RPC control signal). The temp file is always removed; older piper builds that only write to stdout are still handled.
+  - **edge** (`edge.ts`): a dependency-free client for the Microsoft Edge neural-voice websocket (Speech Synthesis Markup Language framing, `Sec-MS-GEC` token minting) that streams MP3 back. Used only while you select it in Settings.
+- The UI's rate percent maps to piper's `--length-scale` as `1 / (1 + rate/100)`, and to SSML `rate="+N%"` for the online engine (same feel, one slider).
 - Markdown is stripped before synthesis (code blocks, links, tables…), long text is cut at a sentence near 6,000 characters, and paragraphs are flattened into one utterance.
-- Prefs live in `ctx.storage` so they survive restarts and are shared by all clients. Old `ja-JP-*Neural` voice ids from the previous online engine reset to the default local voice automatically.
+- Prefs (engine, voice, rate, auto-play) live in `ctx.storage` so they survive restarts and are shared by all clients. Switching engines resets the voice to that engine's default; old `ja-JP-*Neural` voice ids from earlier online-only builds reset to the default local voice automatically.
 - The context menu: a capture-phase `contextmenu` listener finds the current selection and renders a Portal menu with 「選択した文字列を読み上げ」.
 - The previewed file: each tab of the host's review panel carries `data-value="file://<workspace path>"` and the selected one is marked, so the plugin reads that path from the DOM, loads the file through `ctx.screen.current().file` and speaks it like any other text.
 
@@ -100,13 +103,14 @@ Some machines power down the audio output device after a few quiet seconds, and 
 
 ## 日本語
 
-OpenCode Desktop に日本語読み上げ (TTS) を追加するプラグインです。**合成は完全にローカル**（Piper エンジン）で、外部のインターネットサービスは一切使いません。
+OpenCode Desktop に日本語読み上げ (TTS) を追加するプラグインです。**既定は完全ローカル合成**（Piper エンジン）で、ネットワークは使いません。設定画面で任意でオンラインの「Microsoft Edge 音声」エンジンに切り替えられます（オプトイン）。
 
 - チャットの文章を選択して右クリック → **「選択した文字列を読み上げ」**
 - ファイルプレビューパネルで開いているファイルもそのまま読み上げられます（ヘッダーボタンまたはコマンド）。
 - 声は音声モデル置き場（既定 `~/.local/share/opencode-tts/voices`）から自動検出。`.onnx` と `.onnx.json` の組を置くだけで設定画面に現れます。
 - 声の選択・話速（-50%〜+50%）・「新しいアシスタントメッセージを自動で読む」設定はサーバー側に保存されます。
 - ヘッダーボタンと `/tts` コマンドからも操作できます。
+- 読み上げエンジンは設定画面で切替可能：「ローカル — Piper」（既定）／「オンライン — Microsoft Edge 音声」。オンライン選択中のみ、読み上げる文章が Microsoft へ送信されます。
 
 エンジン導入（一度だけ）:
 
@@ -121,7 +125,9 @@ uv tool install piper-tts --with pyopenjtalk-plus   # 日本語話者化に pyop
 
 ## Security notes
 
-- **No credentials, no network.** The plugin makes zero outbound connections. Text is piped to the local `piper` process and never leaves the machine. 認証情報もネットワーク通信も一切ありません。
+- **Default: no credentials, no network.** With the default Piper engine the plugin makes zero outbound connections. Text is piped to the local `piper` process and never leaves the machine. 既定の Piper 引擎では認証情報もネットワーク通信も一切ありません。
+- **Online engine is opt-in.** Only while you explicitly select "Online — Microsoft Edge voices" in Settings does the plugin open one outbound websocket to Microsoft (`speech.platform.bing.com`) and send the read-aloud text there. No credentials are used; the settings page and the voice picker note this while the online engine is active.
+- The online voice list is a static, curated list shipped with the plugin — the plugin never downloads the service's full voice catalogue, so selecting the online engine triggers no discovery traffic either.
 - Markdown stripping (`sanitizeForSpeech`) keeps code, URLs and markup from being read aloud; covered by `test/tts.test.ts`.
 
 ## Voice license and attribution
@@ -136,6 +142,7 @@ You download voice models yourself during setup; keep each model's license terms
 ## Acknowledgements
 
 - [Piper](https://github.com/rhasspy/piper) and the [piper-voices](https://huggingface.co/rhasspy/piper-voices) collection — the offline speech engine and models.
+- The optional online engine reuses protocol handling ported from this project's own earlier implementation, which was derived from the [Home Assistant](https://github.com/home-assistant/core) `edge_tts` integration (Apache-2.0), whose `Sec-MS-GEC` logic follows a public snippet by [rany2](https://gist.github.com/rany2/2b44bde6396931ee3220e1b542c6b72c). The Edge voice service is an undocumented Microsoft endpoint.
 - The `@opencode/plugin/gui` experimental API (OpenCode 2.3).
 
 ## License
