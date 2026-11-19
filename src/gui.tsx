@@ -296,6 +296,42 @@ export default Plugin.define({
       node.start()
     }
 
+    // ---------- engine warm-up ----------
+    // Only the very first playback crackled: on this machine the audio output
+    // device emits a pop while it powers on, and that glitch landed on the
+    // opening of the first clip (later clips start clean because the device is
+    // already running). Absorb it with a few ms of silence — attempted at
+    // plugin load, and again on the first user gesture in case the autoplay
+    // policy kept the context suspended until then.
+    const warmUp = () => {
+      try {
+        context ??= new AudioContext()
+      } catch {
+        return
+      }
+      const active = context
+      void active
+        .resume()
+        .then(() => {
+          if (active.state !== "running") return
+          const silence = active.createBuffer(1, Math.max(1, Math.floor(active.sampleRate / 50)), active.sampleRate)
+          const node = active.createBufferSource()
+          node.buffer = silence
+          node.connect(active.destination)
+          node.start()
+        })
+        .catch(() => {
+          /* stay suspended; the next gesture or playAudio() retries */
+        })
+    }
+    warmUp()
+    // Autoplay policy may keep the context suspended until a user gesture;
+    // the very first click/keypress (even the read-aloud button itself) fires
+    // before playback starts, so the pop is still absorbed in time.
+    for (const event of ["pointerdown", "keydown"] as const) {
+      window.addEventListener(event, warmUp, { once: true })
+    }
+
     let lastReadId = ""
 
     const play = async (input: { sessionID?: string; messageID?: string; text?: string }, marker: string) => {
