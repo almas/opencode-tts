@@ -1,8 +1,8 @@
 {
   "name": "opencode-tts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "ローカル Piper エンジンの日本語読み上げを OpenCode Desktop に追加するプラグイン（完全オフライン）",
+  "description": "ローカル Piper / VOICEVOX の日本語読み上げを OpenCode Desktop に追加するプラグイン（ワンクリック音声選択・常駐高速スタート）",
   "license": "MIT",
   "repository": {
     "type": "git",

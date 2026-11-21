@@ -410,17 +410,13 @@ export async function synthesize(
 }
 
 /**
- * The online voices offered in settings. A short curated list rather than the
- * service's full catalogue: it keeps the settings page honest without a
- * network call, and the Japanese voices here are the ones anyone actually
- * picks. `label` is what the user sees; `id` is what the service expects.
+ * The online voices offered in settings. Deliberately only the two the live
+ * service actually synthesizes for ja-JP today (Aoi/Daichi/Mayu/Naoki/Shiori
+ * have been failing with 403s since late 2025 — listing them would only set
+ * the user up for a silent failure). `label` is what the user sees; `id` is
+ * what the service expects.
  */
 export const EDGE_VOICES = [
   { id: "ja-JP-NanamiNeural", label: "Nanami (ja-JP, female)" },
   { id: "ja-JP-KeitaNeural", label: "Keita (ja-JP, male)" },
-  { id: "ja-JP-AoiNeural", label: "Aoi (ja-JP, female)" },
-  { id: "ja-JP-DaichiNeural", label: "Daichi (ja-JP, male)" },
-  { id: "ja-JP-MayuNeural", label: "Mayu (ja-JP, female)" },
-  { id: "ja-JP-NaokiNeural", label: "Naoki (ja-JP, male)" },
-  { id: "ja-JP-ShioriNeural", label: "Shiori (ja-JP, female)" },
 ] as const

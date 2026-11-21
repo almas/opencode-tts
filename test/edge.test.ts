@@ -60,4 +60,9 @@ describe("EDGE_VOICES", () => {
       expect(voice.label.length).toBeGreaterThan(0)
     }
   })
+
+  it("keeps exactly the two voices Microsoft still serves", () => {
+    // 2025-11 probe: Nanami/Keita return audio, the other four fail with 403.
+    expect(EDGE_VOICES.map((voice) => voice.id)).toEqual(["ja-JP-NanamiNeural", "ja-JP-KeitaNeural"])
+  })
 })

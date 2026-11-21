@@ -9,7 +9,7 @@
 import { For, Show, createEffect, createResource, createSignal, onCleanup, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { Command, Panel, Plugin, SettingsPage, Slot, type MountedSession } from "@opencode/plugin/gui"
-import { TtsRpc, type Prefs, type ReplyItem, type SpeakResult, type TtsEngine, type VoiceItem } from "./rpc"
+import { TtsRpc, type AudioInfoResult, type CatalogVoice, type Prefs, type ReplyItem, type SpeakResult } from "./rpc"
 import { fileLabel, previewedFilePath } from "./preview"
 import {
   COPY_WRAPPER_SELECTOR,
@@ -44,16 +44,17 @@ interface PanelPropsLike {
 }
 
 interface RpcLike {
-  speak(input: { sessionID?: string; messageID?: string; text?: string }): Promise<unknown>
+  speak(input: { sessionID?: string; messageID?: string; text?: string; voice?: string }): Promise<SpeakResult>
   replies(input: { sessionID: string }): Promise<unknown>
   latest(input: { sessionID: string }): Promise<unknown>
-  voices(input?: object): Promise<unknown>
+  catalog(input?: object): Promise<unknown>
+  audioInfo(input: { sessionID?: string; messageID?: string; text?: string; voice?: string }): Promise<AudioInfoResult>
   prefs(input?: object): Promise<unknown>
   setPrefs(input: Partial<Prefs>): Promise<unknown>
 }
 
-/** `voice: ""` means "whatever the server lists first" (installed models). */
-const DEFAULT_PREFS: Prefs = { engine: "piper", voice: "", rate: 0, autoPlay: false, keepWarm: true }
+/** `voice: ""` means "whatever the server catalog lists first" (installed models). */
+const DEFAULT_PREFS: Prefs = { voice: "", rate: 0, autoPlay: false, keepWarm: true, pickVoice: true, fastStart: true }
 
 /**
  * Flatten anything thrown by the SDK into readable text. The client throws
@@ -166,14 +167,21 @@ export default Plugin.define({
       "tts.reply-count": "{count} replies",
       "tts.error": "TTS failed",
       "tts.settings.title": "TTS",
-      "tts.settings.engine": "Engine",
-      "tts.settings.engine.local": "Local — Piper (no network)",
-      "tts.settings.engine.online": "Online — Microsoft Edge voices",
-      "tts.settings.voice": "Voice",
+      "tts.settings.voice": "Default voice",
       "tts.settings.rate": "Speed",
       "tts.settings.voiceNone": "No voice installed",
       "tts.settings.auto-play": "Read new replies by voice when the assistant finishes",
-      "tts.settings.keep-warm": "Keep the audio device awake (prevents the pop when playing after idle)",
+      "tts.settings.keep-warm": "Keep the local engine and audio device warm (faster start, no pop after idle)",
+      "tts.settings.pick-voice": "Ask which voice to read with on every read-aloud",
+      "tts.settings.fast-start": "Fast start: stream from the resident local engine while synthesizing",
+      "tts.pick.title": "Read with which voice?",
+      "tts.pick.hint": "Click a voice or press its number — Esc cancels",
+      "tts.pick.local": "Local — offline",
+      "tts.pick.online": "Online",
+      "tts.tag.male": "male",
+      "tts.tag.female": "female",
+      "tts.tag.child": "child",
+      "tts.tag.child-fx": "child-like",
       "tts.context.read": "Read selection",
       "tts.context.stop": "Stop voice reading",
       "tts.context.latest": "Read latest reply",
@@ -203,14 +211,21 @@ export default Plugin.define({
       "tts.reply-count": "{count} 件の返信",
       "tts.error": "読み上げに失敗しました",
       "tts.settings.title": "読み上げ",
-      "tts.settings.engine": "エンジン",
-      "tts.settings.engine.local": "ローカル — Piper（ネットワーク不要）",
-      "tts.settings.engine.online": "オンライン — Microsoft Edge 音声",
-      "tts.settings.voice": "音声",
+      "tts.settings.voice": "既定の音声",
       "tts.settings.voiceNone": "音声モデル未インストール",
       "tts.settings.rate": "速度",
       "tts.settings.auto-play": "アシスタントの応答完了後、新しい返信を自動で読み上げる",
-      "tts.settings.keep-warm": "オーディオデバイスを起動状態に保つ（アイドル後の再生開始時のポップノイズを防止）",
+      "tts.settings.keep-warm": "ローカルエンジンとオーディオデバイスを起動状態に保つ（読み上げ開始の遅延とポップノイズを軽減）",
+      "tts.settings.pick-voice": "読み上げのたびに音声を選ぶダイヤログを表示する",
+      "tts.settings.fast-start": "高速開始：常駐サーバーへストリーム送信し、合成しながら再生を開始する",
+      "tts.pick.title": "どの音声で読む？",
+      "tts.pick.hint": "クリックまたは数字キーで選択 ― Esc でキャンセル",
+      "tts.pick.local": "ローカル ― オフライン",
+      "tts.pick.online": "オンライン",
+      "tts.tag.male": "男性",
+      "tts.tag.female": "女性",
+      "tts.tag.child": "子供",
+      "tts.tag.child-fx": "子供風",
       "tts.context.read": "選択した文字列を読み上げ",
       "tts.context.stop": "読み上げを停止",
       "tts.context.latest": "最新の返信を読み上げ",
@@ -229,33 +244,32 @@ export default Plugin.define({
 
     // ---------- preferences ----------
     const [prefs, setPrefs] = createSignal<Prefs>({ ...DEFAULT_PREFS })
-    const [voices, setVoices] = createSignal<VoiceItem[]>([])
-    const [voicesNote, setVoicesNote] = createSignal<string>("")
+    const [catalog, setCatalog] = createSignal<CatalogVoice[]>([])
+    const [defaultVoice, setDefaultVoice] = createSignal("")
+    const [catalogNote, setCatalogNote] = createSignal("")
     void retryRpc("prefs", () => rpc.prefs({})).then((value) => {
       if (value) setPrefs(value as Prefs)
     })
-    const loadVoices = () => {
-      void retryRpc("voices", () => rpc.voices({})).then((value) => {
+    const loadCatalog = () => {
+      void retryRpc("catalog", () => rpc.catalog({})).then((value) => {
         if (!value) return
-        const result = value as { voices: VoiceItem[]; note?: string }
-        setVoices(result.voices ?? [])
-        setVoicesNote(result.note ?? "")
+        const result = value as { voices: CatalogVoice[]; defaultVoice?: string; note?: string }
+        setCatalog(result.voices ?? [])
+        setDefaultVoice(result.defaultVoice ?? "")
+        setCatalogNote(result.note ?? "")
       })
     }
-    loadVoices()
+    loadCatalog()
+
+    /** The voice a read-aloud uses when the user hasn't picked one this time. */
+    const effectiveVoice = () => prefs().voice || defaultVoice()
 
     const savePrefs = async (patch: Partial<Prefs>) => {
-      const engineChanged = patch.engine !== undefined && patch.engine !== prefs().engine
       const next = { ...prefs(), ...patch }
       setPrefs(next)
-      if (engineChanged) {
-        // Voices belong to an engine: the list (and its note) is the server's,
-        // so drop the stale one and refetch alongside the preference write.
-        setVoices([])
-        setVoicesNote("")
-        loadVoices()
-      }
       try {
+        // The server answers with the stored shape (and starts warming the
+        // local engine in the background when the new voice is a local one).
         setPrefs((await rpc.setPrefs(next)) as Prefs)
       } catch (error) {
         console.error(`[tts] setPrefs failed: ${errorText(error)}`)
@@ -275,6 +289,7 @@ export default Plugin.define({
     // leaves nothing in flight when sound starts.
     let context: AudioContext | undefined
     let source: AudioBufferSourceNode | undefined
+    const streamNodes = new Set<AudioBufferSourceNode>()
     let token = 0
     // When the output device last rendered anything (real clip or silent beat).
     // Output devices here power down after a few idle seconds and pop while
@@ -312,15 +327,29 @@ export default Plugin.define({
     }
 
     /** True only while decoded audio is running, which is what the stop controls key off. */
-    const isPlaying = () => source !== undefined
+    const isPlaying = () => source !== undefined || streamNodes.size > 0
+
+    /** Aborts an in-flight streamed playback (reader loop checks this token). */
+    let streamToken = 0
 
     const halt = () => {
+      streamToken += 1
       if (source) {
         source.onended = null
         source.stop()
         source.disconnect()
         source = undefined
       }
+      for (const node of streamNodes) {
+        node.onended = null
+        try {
+          node.stop()
+        } catch {
+          /* already finished */
+        }
+        node.disconnect()
+      }
+      streamNodes.clear()
       setPlayingId("")
     }
 
@@ -330,9 +359,11 @@ export default Plugin.define({
       setBusyId("")
     }
 
-    async function playAudio(base64: string, marker: string): Promise<void> {
-      const myToken = token
-      const clip = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
+    /**
+     * Resume the context and wake a cold output device (silent beat + settle)
+     * so the first real sample doesn't land on a power-on pop.
+     */
+    const wakeOutput = async (myToken: number): Promise<AudioContext> => {
       context ??= new AudioContext()
       // A context created without a user gesture starts suspended; onended
       // timing and resume() rejection are the two ways autoplay fails here.
@@ -348,9 +379,118 @@ export default Plugin.define({
         console.info(`[tts] audio output idle ${Math.round(idleMs / 1000)}s — waking device before playback`)
         await silentBeat(active, WAKE_BEAT_SEC).catch(() => {})
         await new Promise((resolve) => setTimeout(resolve, WAKE_SETTLE_MS))
-        if (myToken !== token) return
+        if (myToken !== token) throw new Error("cancelled")
         await active.resume().catch(() => {})
       }
+      return active
+    }
+
+    /** Queue one mono 16-bit PCM segment to start at `earliest`; returns its end time. */
+    const schedulePcm = (
+      active: AudioContext,
+      pcm: Uint8Array,
+      sampleRate: number,
+      earliest: number,
+      playbackRate: number,
+      marker: string,
+    ): number => {
+      const samples = Math.floor(pcm.byteLength / 2)
+      if (samples <= 0) return earliest
+      const view = new DataView(pcm.buffer, pcm.byteOffset, samples * 2)
+      const buffer = active.createBuffer(1, samples, sampleRate)
+      const channel = buffer.getChannelData(0)
+      for (let index = 0; index < samples; index++) channel[index] = view.getInt16(index * 2, true) / 32768
+      const node = active.createBufferSource()
+      node.buffer = buffer
+      node.playbackRate.value = playbackRate
+      node.connect(active.destination)
+      const start = Math.max(earliest, active.currentTime + 0.01)
+      node.onended = () => {
+        streamNodes.delete(node)
+        if (streamNodes.size === 0 && lastMarker === marker) {
+          lastAudioAt = Date.now()
+          if (playingId() === marker) setPlayingId("")
+        }
+      }
+      streamNodes.add(node)
+      node.start(start)
+      return start + buffer.duration / playbackRate
+    }
+
+    /** Marker of the most recent stream, so late onended events don't clear a newer play state. */
+    let lastMarker = ""
+
+    /**
+     * Stream raw PCM from a running `/synth` response and start playing after
+     * the first ~0.4 s of audio, while the rest of the phrase is still being
+     * synthesized. Segments are queued back-to-back on the audio clock, so the
+     * seams are inaudible.
+     */
+    const playStream = async (
+      body: ReadableStream<Uint8Array>,
+      sampleRate: number,
+      marker: string,
+      playbackRate: number,
+      myToken: number,
+    ): Promise<void> => {
+      const active = await wakeOutput(myToken)
+      if (myToken !== token) return
+      const reader = body.getReader()
+      const segBytes = Math.round(sampleRate * 0.4) * 2
+      let pending = new Uint8Array(0)
+      let stripHeader = true
+      let queuedUntil = active.currentTime + 0.02
+      let started = false
+      lastMarker = marker
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (myToken !== token) {
+          await reader.cancel().catch(() => {})
+          return
+        }
+        if (value && value.byteLength) {
+          const merged = new Uint8Array(pending.byteLength + value.byteLength)
+          merged.set(pending)
+          merged.set(value, pending.byteLength)
+          pending = merged
+        }
+        if (stripHeader) {
+          // The server sends a placeholder RIFF/WAVE header (sizes unknown at
+          // stream start); it is exactly 44 bytes of the first segment.
+          if (!done && pending.byteLength < 44) {
+            if (!done) continue
+          }
+          pending = pending.subarray(Math.min(44, pending.byteLength))
+          stripHeader = false
+        }
+        for (;;) {
+          const take = done ? pending.byteLength - (pending.byteLength % 2) : Math.min(pending.byteLength, segBytes)
+          const whole = take - (take % 2)
+          if (whole < 2 || (!done && whole < segBytes)) break
+          queuedUntil = schedulePcm(active, pending.subarray(0, whole), sampleRate, queuedUntil, playbackRate, marker)
+          pending = pending.subarray(whole)
+          if (!started) {
+            started = true
+            setPlayingId(marker)
+            lastAudioAt = Date.now()
+            // A first segment this short means the server ran out of text
+            // mid-stream (tiny replies); playing it is still correct.
+          }
+        }
+        if (done) break
+      }
+      if (started && myToken === token) setBusyId("")
+      if (!started) {
+        // Empty synthesis — let the caller's fallback path handle it.
+        throw new Error("empty stream")
+      }
+    }
+
+    async function playAudio(base64: string, marker: string, playbackRate = 1): Promise<void> {
+      const myToken = token
+      const clip = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
+      const active = await wakeOutput(myToken)
+      if (myToken !== token) return
       const buffer = await active.decodeAudioData(clip.buffer as ArrayBuffer).catch(() => {
         throw new Error("audio playback failed")
       })
@@ -364,6 +504,7 @@ export default Plugin.define({
       }
       const node = active.createBufferSource()
       node.buffer = padded
+      node.playbackRate.value = playbackRate
       node.connect(active.destination)
       node.onended = () => {
         if (source !== node) return
@@ -438,19 +579,58 @@ export default Plugin.define({
 
     let lastReadId = ""
 
-    const play = async (input: { sessionID?: string; messageID?: string; text?: string }, marker: string) => {
+    /**
+     * Read one thing aloud. With `fastStart` the GUI first asks for a synth
+     * plan: for local voices the resident sidecar is streaming audio into the
+     * speaker while the sentence is still being synthesized. Without a plan
+     * (online voices, engine unavailable, stale model list) the full clip
+     * arrives through the `speak` RPC instead. `voiceOverride` is the one-click
+     * voice picked in the dialog; empty means the stored preference.
+     */
+    const play = async (
+      input: { sessionID?: string; messageID?: string; text?: string },
+      marker: string,
+      voiceOverride?: string,
+    ) => {
       stop()
       const mine = token
       setBusyId(marker)
+      const voice = voiceOverride?.trim() || undefined
       try {
-        const result = (await rpc.speak(input)) as SpeakResult
+        if (prefs().fastStart) {
+          try {
+            const info = await rpc.audioInfo({ ...input, ...(voice ? { voice } : {}) })
+            if (mine !== token) return
+            if (info?.url && info.token && info.synth?.text) {
+              const response = await fetch(`${info.url}/synth`, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-tts-token": info.token },
+                body: JSON.stringify(info.synth),
+              })
+              if (response.ok && response.body) {
+                await playStream(
+                  response.body,
+                  Number(response.headers.get("x-tts-sample-rate")) || 22050,
+                  marker,
+                  info.playbackRate ?? 1,
+                  mine,
+                )
+                return
+              }
+            }
+          } catch (error) {
+            if (mine !== token) return
+            console.info(`[tts] fast path unavailable (${errorText(error)}), using speak`)
+          }
+        }
+        const result = await rpc.speak({ ...input, ...(voice ? { voice } : {}) })
         if (mine !== token) return
         if (!result?.audio) {
           ctx.toast.show({ title: ctx.t("tts.empty"), variant: "default" })
           return
         }
         if (result.messageID) lastReadId = result.messageID
-        await playAudio(result.audio, marker)
+        await playAudio(result.audio, marker, result.playbackRate ?? 1)
       } catch (error) {
         if (mine !== token) return
         console.error(`[tts] speak failed: ${errorText(error)}`)
@@ -460,9 +640,43 @@ export default Plugin.define({
       }
     }
 
+    // ---------- one-click voice picker ----------
+    // When `pickVoice` is on, every read-aloud gesture opens the picker for a
+    // split second: the row the user clicks (or the number they type) is the
+    // voice the phrase is read in. The dialog fires the warm-up itself, so by
+    // the time a choice is made the local engine is already spinning.
+    const [pickerRequest, setPickerRequest] = createSignal<{
+      input: { sessionID?: string; messageID?: string; text?: string }
+      marker: string
+      nonce: number
+    } | null>(null)
+    let pickerNonce = 0
+
+    const readWith = (
+      input: { sessionID?: string; messageID?: string; text?: string },
+      marker: string,
+      voiceId?: string,
+    ) => {
+      if (prefs().pickVoice) {
+        // Warm the local engine for the voice the picker will highlight,
+        // without waiting for it: the dialog opens over the spinning engine.
+        void rpc.audioInfo({ ...input, voice: voiceId ?? effectiveVoice() }).catch(() => {})
+        setPickerRequest({ input, marker, nonce: (pickerNonce += 1) })
+        return
+      }
+      void play(input, marker, voiceId ?? effectiveVoice())
+    }
+
+    const choosePickerVoice = (voiceId: string) => {
+      const request = pickerRequest()
+      if (!request) return
+      setPickerRequest(null)
+      void play(request.input, request.marker, voiceId)
+    }
+
     const playLatest = (session: MountedSession | undefined) => {
       if (!session) return
-      void play({ sessionID: session.id }, "latest")
+      readWith({ sessionID: session.id }, "latest")
     }
 
     const playSelection = () => {
@@ -471,7 +685,7 @@ export default Plugin.define({
         ctx.toast.show({ title: ctx.t("tts.empty"), variant: "default" })
         return
       }
-      void play({ text }, "selection")
+      readWith({ text }, "selection")
     }
 
     // ---------- previewed file ----------
@@ -501,7 +715,7 @@ export default Plugin.define({
         return
       }
       ctx.toast.show({ title: ctx.t("tts.file.reading", { file: name }), variant: "default" })
-      await play({ text }, "file")
+      readWith({ text }, "file")
     }
 
     // ---------- auto play ----------
@@ -648,9 +862,186 @@ export default Plugin.define({
         <>
           <ReadControls />
           <SelectionMenu />
+          <VoiceDialog />
         </>
       ),
     })
+
+    // ---------- one-click voice picker ----------
+    /**
+     * Modal shown for every read-aloud gesture while `pickVoice` is on. Rows
+     * are the server catalog grouped into local/online; a click (or the row's
+     * number key) starts the reading in that voice immediately. The dialog is
+     * mounted in the always-present window slot so it appears over whatever
+     * view the gesture came from, and it renders through a Portal so panel
+     * overflow styles cannot clip it.
+     */
+    function VoiceDialog() {
+      const palette = menuPalette()
+      const groups = (): { title: string; voices: CatalogVoice[] }[] => {
+        const all = catalog()
+        const local = all.filter((voice) => !voice.online)
+        const online = all.filter((voice) => voice.online)
+        const out: { title: string; voices: CatalogVoice[] }[] = []
+        if (local.length) out.push({ title: ctx.t("tts.pick.local"), voices: local })
+        if (online.length) out.push({ title: ctx.t("tts.pick.online"), voices: online })
+        return out
+      }
+      /** Display order flattened — number keys 1..9 map onto it. */
+      const flat = () => groups().flatMap((group) => group.voices)
+      const tagsOf = (voice: CatalogVoice): string[] => {
+        const tags: string[] = []
+        if (voice.gender === "male") tags.push(ctx.t("tts.tag.male"))
+        if (voice.gender === "female") tags.push(ctx.t("tts.tag.female"))
+        if (voice.child) tags.push(ctx.t(voice.fx ? "tts.tag.child-fx" : "tts.tag.child"))
+        if (voice.engine === "voicevox") tags.push("VOICEVOX")
+        return tags
+      }
+
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (!pickerRequest()) return
+        if (event.key === "Escape") {
+          event.preventDefault()
+          event.stopPropagation()
+          setPickerRequest(null)
+          return
+        }
+        const index = /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : -1
+        const voice = index >= 0 ? flat()[index] : undefined
+        if (voice) {
+          event.preventDefault()
+          event.stopPropagation()
+          choosePickerVoice(voice.id)
+        }
+      }
+      window.addEventListener("keydown", onKeyDown, true)
+      onCleanup(() => window.removeEventListener("keydown", onKeyDown, true))
+
+      // Nothing to pick before the catalog arrives (or with no voices at all):
+      // don't strand the gesture on an empty dialog, just read with defaults.
+      createEffect(() => {
+        if (pickerRequest() && catalog().length === 0) choosePickerVoice("")
+      })
+
+      return (
+        <Show when={pickerRequest()}>
+          <Portal>
+            <div
+              onPointerDown={(event) => {
+                if (event.target === event.currentTarget) setPickerRequest(null)
+              }}
+              style={{
+                position: "fixed",
+                inset: "0",
+                "z-index": "2147483646",
+                background: "rgba(0, 0, 0, 0.35)",
+                display: "flex",
+                "align-items": "center",
+                "justify-content": "center",
+              }}
+            >
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-label={ctx.t("tts.pick.title")}
+                style={{
+                  "min-width": "320px",
+                  "max-width": "440px",
+                  "max-height": "70vh",
+                  "overflow-y": "auto",
+                  background: palette.background,
+                  color: palette.color,
+                  border: palette.border,
+                  "border-radius": "10px",
+                  padding: "10px 10px 8px",
+                  "box-shadow": "0 12px 40px rgba(0, 0, 0, 0.45)",
+                  "font-size": "13px",
+                }}
+              >
+                <p style={{ margin: "2px 6px 8px", "font-weight": "600" }}>{ctx.t("tts.pick.title")}</p>
+                <For each={groups()}>
+                  {(group) => (
+                    <>
+                      <p
+                        style={{
+                          margin: "6px 6px 2px",
+                          "font-size": "11px",
+                          "letter-spacing": "0.04em",
+                          opacity: "0.6",
+                        }}
+                      >
+                        {group.title}
+                      </p>
+                      <For each={group.voices}>
+                        {(voice) => {
+                          const index = () => flat().indexOf(voice)
+                          const isDefault = () => voice.id === effectiveVoice()
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => choosePickerVoice(voice.id)}
+                              onPointerDown={(event) => event.preventDefault()}
+                              onMouseEnter={(event) => (event.currentTarget.style.background = palette.hover)}
+                              onMouseLeave={(event) =>
+                                (event.currentTarget.style.background = isDefault() ? palette.hover : "transparent")
+                              }
+                              style={{
+                                display: "flex",
+                                "align-items": "center",
+                                gap: "8px",
+                                width: "100%",
+                                "text-align": "left",
+                                background: isDefault() ? palette.hover : "transparent",
+                                border: "none",
+                                "border-radius": "6px",
+                                color: "inherit",
+                                "font-size": "13px",
+                                "font-family": "inherit",
+                                padding: "7px 8px",
+                                cursor: "pointer",
+                              }}
+                            >
+                              <span
+                                style={{
+                                  "flex-shrink": "0",
+                                  width: "16px",
+                                  opacity: index() >= 0 && index() < 9 ? "0.55" : "0",
+                                  "font-size": "11px",
+                                }}
+                              >
+                                {index() >= 0 && index() < 9 ? index() + 1 : ""}
+                              </span>
+                              <span style={{ flex: "1" }}>{voice.label}</span>
+                              <For each={tagsOf(voice)}>
+                                {(tag) => (
+                                  <span
+                                    style={{
+                                      "flex-shrink": "0",
+                                      "font-size": "10px",
+                                      padding: "1px 6px",
+                                      "border-radius": "999px",
+                                      border: `1px solid ${palette.border.replace(/^1px solid /, "")}`,
+                                      opacity: "0.75",
+                                    }}
+                                  >
+                                    {tag}
+                                  </span>
+                                )}
+                              </For>
+                            </button>
+                          )
+                        }}
+                      </For>
+                    </>
+                  )}
+                </For>
+                <p style={{ margin: "8px 6px 2px", "font-size": "11px", opacity: "0.55" }}>{ctx.t("tts.pick.hint")}</p>
+              </div>
+            </div>
+          </Portal>
+        </Show>
+      )
+    }
 
     const tab = {
       id: "replies",
@@ -722,7 +1113,7 @@ export default Plugin.define({
                       aria-label={ctx.t("tts.action.play-item")}
                       onClick={() => {
                         if (isPlaying()) stop()
-                        else if (!isBusy()) void play({ text: item.text }, item.id)
+                        else if (!isBusy()) readWith({ text: item.text }, item.id)
                       }}
                       style={{
                         flex: "none",
@@ -903,7 +1294,7 @@ export default Plugin.define({
                       onClick={() => {
                         const text = entry().text
                         close()
-                        void play({ text }, "selection")
+                        readWith({ text }, "selection")
                       }}
                     />
                   </Show>
@@ -1118,7 +1509,7 @@ export default Plugin.define({
             ctx.toast.show({ title: ctx.t("tts.empty"), variant: "default" })
             return
           }
-          void play({ text }, own || "message")
+          readWith({ text }, own || "message")
         }
       }
 
@@ -1183,34 +1574,48 @@ export default Plugin.define({
     })
 
     function SettingsView() {
-      const list = () => (voices().length > 0 ? voices() : [{ id: "", label: ctx.t("tts.settings.voiceNone") }])
+      /** Catalog grouped like the picker; the select reuses the same order. */
+      const groups = () => {
+        const all = catalog()
+        const local = all.filter((voice) => !voice.online)
+        const online = all.filter((voice) => voice.online)
+        const out: { title: string; voices: CatalogVoice[] }[] = []
+        if (local.length) out.push({ title: ctx.t("tts.pick.local"), voices: local })
+        if (online.length) out.push({ title: ctx.t("tts.pick.online"), voices: online })
+        return out
+      }
+      const tagOf = (voice: CatalogVoice) => {
+        if (voice.gender === "male") return ` — ${ctx.t("tts.tag.male")}`
+        if (voice.gender === "female") return ` — ${ctx.t("tts.tag.female")}`
+        return ""
+      }
       return (
         <div style={{ display: "flex", "flex-direction": "column", gap: "16px", padding: "4px 0", "font-size": "13px" }}>
           <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
-            <span>{ctx.t("tts.settings.engine")}</span>
-            <select
-              value={prefs().engine}
-              onChange={(event) => void savePrefs({ engine: event.currentTarget.value as TtsEngine, voice: "" })}
-              style={{ "align-self": "flex-start", padding: "4px 8px", "min-width": "240px" }}
-            >
-              <option value="piper">{ctx.t("tts.settings.engine.local")}</option>
-              <option value="edge">{ctx.t("tts.settings.engine.online")}</option>
-            </select>
-          </label>
-          <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
             <span>{ctx.t("tts.settings.voice")}</span>
             <select
-              value={prefs().voice}
-              disabled={voices().length === 0}
+              value={effectiveVoice()}
+              disabled={catalog().length === 0}
               onChange={(event) => void savePrefs({ voice: event.currentTarget.value })}
-              style={{ "align-self": "flex-start", padding: "4px 8px", "min-width": "240px" }}
+              style={{ "align-self": "flex-start", padding: "4px 8px", "min-width": "280px" }}
             >
-              <For each={list()}>
-                {(voice) => <option value={voice.id}>{voice.label}</option>}
-              </For>
+              <Show
+                when={catalog().length > 0}
+                fallback={<option value="">{ctx.t("tts.settings.voiceNone")}</option>}
+              >
+                <For each={groups()}>
+                  {(group) => (
+                    <optgroup label={group.title}>
+                      <For each={group.voices}>
+                        {(voice) => <option value={voice.id}>{voice.label}{tagOf(voice)}</option>}
+                      </For>
+                    </optgroup>
+                  )}
+                </For>
+              </Show>
             </select>
-            <Show when={voicesNote()}>
-              <span style={{ "max-width": "480px", color: "var(--text-weak, inherit)" }}>{voicesNote()}</span>
+            <Show when={catalogNote()}>
+              <span style={{ "max-width": "480px", color: "var(--text-weak, inherit)" }}>{catalogNote()}</span>
             </Show>
           </label>
           <label style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
@@ -1230,10 +1635,18 @@ export default Plugin.define({
           <label style={{ display: "flex", gap: "8px", "align-items": "center" }}>
             <input
               type="checkbox"
-              checked={prefs().autoPlay}
-              onChange={(event) => void savePrefs({ autoPlay: event.currentTarget.checked })}
+              checked={prefs().pickVoice}
+              onChange={(event) => void savePrefs({ pickVoice: event.currentTarget.checked })}
             />
-            <span>{ctx.t("tts.settings.auto-play")}</span>
+            <span>{ctx.t("tts.settings.pick-voice")}</span>
+          </label>
+          <label style={{ display: "flex", gap: "8px", "align-items": "center" }}>
+            <input
+              type="checkbox"
+              checked={prefs().fastStart}
+              onChange={(event) => void savePrefs({ fastStart: event.currentTarget.checked })}
+            />
+            <span>{ctx.t("tts.settings.fast-start")}</span>
           </label>
           <label style={{ display: "flex", gap: "8px", "align-items": "center" }}>
             <input
@@ -1242,6 +1655,14 @@ export default Plugin.define({
               onChange={(event) => void savePrefs({ keepWarm: event.currentTarget.checked })}
             />
             <span>{ctx.t("tts.settings.keep-warm")}</span>
+          </label>
+          <label style={{ display: "flex", gap: "8px", "align-items": "center" }}>
+            <input
+              type="checkbox"
+              checked={prefs().autoPlay}
+              onChange={(event) => void savePrefs({ autoPlay: event.currentTarget.checked })}
+            />
+            <span>{ctx.t("tts.settings.auto-play")}</span>
           </label>
         </div>
       )
