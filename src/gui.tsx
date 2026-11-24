@@ -1243,8 +1243,14 @@ export default Plugin.define({
       )
     }
 
-    /** Dark or light colours for the floating menu, judged from the window background. */
-    const menuPalette = () => {
+    /**
+     * Dark or light colours for the floating menu, judged from the window
+     * background. A function declaration (not a `const` arrow) on purpose:
+     * the host mounts slot components while `setup` is still running, so a
+     * `const` declared here would still be in its temporal dead zone when
+     * `VoiceDialog` renders and the whole plugin would fail to load.
+     */
+    function menuPalette() {
       const bg = getComputedStyle(document.body).backgroundColor
       const rgb = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/.exec(bg)
       let dark = true
