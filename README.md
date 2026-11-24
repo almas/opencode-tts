@@ -93,11 +93,13 @@ comments. Then restart the Desktop app. Upgrading later:
 ## Usage
 
 - Select text in the chat view and choose **選択した文字列を読み上げ** from the
-  floating menu that appears.
+  floating menu that appears. If the dictionary plugin is installed, the menu
+  is shared: its **辞書で引く** row joins the same menu instead of replacing
+  the reading rows.
 - Click the **🔊 ボイス** button in the composer (or ⌘⇧X / Ctrl+Shift+X) to read
   the latest reply. The first click opens the voice dialog — pick a row and it
   speaks; later clicks speak with your chosen voice and the dialog is skipped
-  until you turn it on again in Settings or pick "…" → 音声选择.
+  until you turn it on again in Settings or pick "…" → 音声選択.
 - Use ⏹ to stop the current audio, and ⏸ to toggle the pause icon while
   something is playing.
 - Open **Settings → opencode-tts** to switch voice, rate, auto-play, the

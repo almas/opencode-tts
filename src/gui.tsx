@@ -1184,22 +1184,85 @@ export default Plugin.define({
     }
 
     /**
-     * Floating right-click menu for the message list and the review panel. Its
-     * items follow two axes: whether text is selected (selection mode offers
-     * reading the selection; idle mode offers the latest reply or the open
-     * file) and whether audio runs (stop appears only while playing or busy).
+     * Shared right-click menu (protocol with the dictionary plugin).
+     *
+     * Several plugins want items in the floating menu shown on messages and
+     * the review panel. Replacing that menu wholesale would hide the other
+     * plugin's items, so each plugin registers a provider in a small registry
+     * on `globalThis`; the first plugin whose listener runs builds one menu
+     * from every provider's items. Keep this block in sync with the same
+     * block in the dictionary plugin.
+     */
+    interface ContextMenuItem {
+      id: string
+      owner: string
+      label: string
+      onSelect: () => void
+    }
+    interface ContextMenuContext {
+      /** Selected text at right-click time, trimmed. */
+      text: string
+      inMessage: boolean
+      panel: boolean
+      inEditor: boolean
+    }
+    type ContextMenuProvider = (context: ContextMenuContext) => ContextMenuItem[]
+    interface ContextMenuEntry {
+      /** Lower number sorts earlier in the combined menu. */
+      order: number
+      provide: ContextMenuProvider
+    }
+    interface ContextMenuStore {
+      providers: Map<string, ContextMenuEntry>
+      /** Marks the event whose combined menu some plugin already rendered. */
+      rendered: WeakSet<MouseEvent>
+    }
+    const CONTEXT_MENU_KEY = "__opencodeContextMenuBar"
+    function contextMenuStore(): ContextMenuStore {
+      const holder = globalThis as unknown as Record<string, ContextMenuStore | undefined>
+      return (holder[CONTEXT_MENU_KEY] ??= { providers: new Map(), rendered: new WeakSet<MouseEvent>() })
+    }
+
+    /**
+     * Floating right-click menu for the message list and the review panel.
+     * TTS contributes: read the selection when there is one, otherwise the
+     * latest reply or the open file, plus stop whenever audio runs. Other
+     * plugins' providers contribute their own rows into the same menu.
      */
     function SelectionMenu(): JSX.Element {
-      const [menu, setMenu] = createSignal<{
-        x: number
-        y: number
-        text: string
-        panel: boolean
-        dark: boolean
-      } | null>(null)
+      const [menu, setMenu] = createSignal<{ x: number; y: number; text: string; items: ContextMenuItem[] } | null>(null)
+      const store = contextMenuStore()
       let el: HTMLDivElement | undefined
 
       const close = () => setMenu(null)
+
+      const provide: ContextMenuProvider = (context) => {
+        if ((!context.inMessage && !context.panel) || context.inEditor) return []
+        const playing = Boolean(playingId()) || Boolean(busyId())
+        const items: ContextMenuItem[] = []
+        if (context.text) {
+          items.push({
+            id: "tts.read",
+            owner: "tts",
+            label: ctx.t("tts.context.read"),
+            onSelect: () => readWith({ text: context.text }, "selection"),
+          })
+        } else if (!playing) {
+          if (context.panel)
+            items.push({ id: "tts.file", owner: "tts", label: ctx.t("tts.action.file"), onSelect: () => void readPreviewedFile() })
+          else
+            items.push({
+              id: "tts.latest",
+              owner: "tts",
+              label: ctx.t("tts.context.latest"),
+              onSelect: () => playLatest(ctx.sessions.current()),
+            })
+        }
+        if (playing) items.push({ id: "tts.stop", owner: "tts", label: ctx.t("tts.context.stop"), onSelect: () => stop() })
+        return items
+      }
+      store.providers.set("tts", { order: 10, provide })
+      onCleanup(() => store.providers.delete("tts"))
 
       const onContextMenu = (event: MouseEvent) => {
         if (event.defaultPrevented) return
@@ -1207,27 +1270,36 @@ export default Plugin.define({
         // The review panel shows files in a CodeMirror `.cm-content` that is
         // contenteditable but read-only in practice, so selections there count;
         // only the composer's editors are excluded.
-        const fromPanel = event.target instanceof Element && event.target.closest("#review-panel") != null
-        const fromCodeView = event.target instanceof Element && event.target.closest(".cm-content") != null
+        const panel = event.target instanceof Element && event.target.closest("#review-panel") != null
+        const codeView = event.target instanceof Element && event.target.closest(".cm-content") != null
         let inMessage = false
         let inEditor = false
         for (const node of event.composedPath()) {
           if (!(node instanceof Element)) continue
           if (!inMessage && node.hasAttribute("data-message-id")) inMessage = true
           if (!inEditor && (node.tagName === "TEXTAREA" || node.tagName === "INPUT")) inEditor = true
-          if (!inEditor && !fromPanel && !fromCodeView && node instanceof HTMLElement && node.isContentEditable) inEditor = true
+          if (!inEditor && !panel && !codeView && node instanceof HTMLElement && node.isContentEditable) inEditor = true
           if (inMessage && inEditor) break
         }
-        if ((!inMessage && !fromPanel) || inEditor) return
-        const text = window.getSelection()?.toString().trim() ?? ""
+        const context: ContextMenuContext = { text: window.getSelection()?.toString().trim() ?? "", inMessage, panel, inEditor }
+        const items: ContextMenuItem[] = []
+        for (const entry of [...store.providers.values()].sort((a, b) => a.order - b.order)) {
+          try {
+            items.push(...entry.provide(context))
+          } catch {
+            // One plugin's provider must never break the shared menu.
+          }
+        }
+        if (items.length === 0) return
         event.preventDefault()
         event.stopPropagation()
+        if (store.rendered.has(event)) return
+        store.rendered.add(event)
         setMenu({
           x: Math.max(4, Math.min(event.clientX, window.innerWidth - 280)),
           y: Math.max(4, Math.min(event.clientY, window.innerHeight - 120)),
-          text,
-          panel: fromPanel,
-          dark: menuPalette().background === "#26262b",
+          text: context.text,
+          items,
         })
       }
 
@@ -1257,12 +1329,12 @@ export default Plugin.define({
         <Show when={menu()}>
           {(entry) => {
             const palette = menuPalette()
-            const playing = () => Boolean(playingId()) || Boolean(busyId())
             const preview = entry().text.replace(/\s+/g, " ")
             return (
               <Portal mount={document.body}>
                 <div
                   ref={el}
+                  data-tts-selection-menu=""
                   role="menu"
                   style={{
                     position: "fixed",
@@ -1270,7 +1342,7 @@ export default Plugin.define({
                     top: `${entry().y}px`,
                     "z-index": "2147483647",
                     "min-width": "200px",
-                    "max-width": "270px",
+                    "max-width": "300px",
                     background: palette.background,
                     color: palette.color,
                     border: palette.border,
@@ -1283,57 +1355,23 @@ export default Plugin.define({
                   }}
                   onContextMenu={(event) => event.preventDefault()}
                 >
-                  {/* Selected text: offer the selection, never the whole reply. */}
                   <Show when={entry().text}>
                     <div style={{ padding: "4px 8px 6px", opacity: "0.55", "white-space": "nowrap", "text-overflow": "ellipsis", overflow: "hidden" }}>
                       {preview.length > 40 ? `${preview.slice(0, 40)}…` : preview}
                     </div>
-                    <MenuRow
-                      label={ctx.t("tts.context.read")}
-                      hover={palette.hover}
-                      onClick={() => {
-                        const text = entry().text
-                        close()
-                        readWith({ text }, "selection")
-                      }}
-                    />
                   </Show>
-                  {/* Nothing selected: play the latest reply, or the open file in the panel. */}
-                  <Show when={!entry().text && !playing()}>
-                    <Show
-                      when={entry().panel}
-                      fallback={
-                        <MenuRow
-                          label={ctx.t("tts.context.latest")}
-                          hover={palette.hover}
-                          onClick={() => {
-                            close()
-                            playLatest(ctx.sessions.current())
-                          }}
-                        />
-                      }
-                    >
+                  <For each={entry().items}>
+                    {(item) => (
                       <MenuRow
-                        label={ctx.t("tts.action.file")}
+                        label={item.label}
                         hover={palette.hover}
                         onClick={() => {
                           close()
-                          void readPreviewedFile()
+                          item.onSelect()
                         }}
                       />
-                    </Show>
-                  </Show>
-                  {/* The stop control exists only while audio plays or is being made. */}
-                  <Show when={playing()}>
-                    <MenuRow
-                      label={ctx.t("tts.context.stop")}
-                      hover={palette.hover}
-                      onClick={() => {
-                        close()
-                        stop()
-                      }}
-                    />
-                  </Show>
+                    )}
+                  </For>
                 </div>
               </Portal>
             )
@@ -1457,7 +1495,7 @@ export default Plugin.define({
         // only the outermost element of the first section takes the item, so
         // the same item never appears twice in one menu.
         if (menu.parentElement?.closest('[role="menu"]')) return
-        if (menu.closest("[data-tts-selection-menu]")) return
+        if (menu.closest("[data-tts-selection-menu], [data-oc-ctx-menu]")) return
         // With an active text selection the floating menu already offers to
         // read it (plus stop while playing), so the host menu gets no item;
         // one injected by an earlier idle right-click is dropped here.
