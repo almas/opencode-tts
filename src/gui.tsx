@@ -186,6 +186,21 @@ function contextMenuStore(): ContextMenuStore {
   return (holder[CONTEXT_MENU_KEY] ??= { providers: new Map(), rendered: new WeakSet<MouseEvent>() })
 }
 
+/**
+ * Cross-plugin read-aloud bridge (protocol with the dictionary plugin).
+ * The plugin that owns the audio pipeline publishes it on `globalThis`; other
+ * plugins call it to speak a word with the user's chosen voice instead of the
+ * browser's speechSynthesis, which lacks Japanese voices on many Linux setups.
+ * Keep this block in sync with the same block in the dictionary plugin.
+ */
+interface TtsBridge {
+  /** Queues `text` for reading with the current voice. */
+  speak: (text: string) => void
+  /** Stops the current reading. */
+  stop: () => void
+}
+const TTS_BRIDGE_KEY = "__opencodeTtsBridge"
+
 export default Plugin.define({
   i18n: {
     en: {
@@ -706,6 +721,22 @@ export default Plugin.define({
       }
       void play(input, marker, voiceId ?? effectiveVoice())
     }
+
+    // Publish the read-aloud bridge (see the protocol block above): the
+    // dictionary's 🔈 buttons speak through this plugin's engine instead of
+    // the browser's speech synthesis.
+    const bridge: TtsBridge = {
+      speak: (text) => {
+        const trimmed = text.trim()
+        if (trimmed) readWith({ text: trimmed }, "widget")
+      },
+      stop,
+    }
+    const bridgeHolder = globalThis as unknown as Record<string, TtsBridge | undefined>
+    bridgeHolder[TTS_BRIDGE_KEY] = bridge
+    onCleanup(() => {
+      if (bridgeHolder[TTS_BRIDGE_KEY] === bridge) delete bridgeHolder[TTS_BRIDGE_KEY]
+    })
 
     const choosePickerVoice = (voiceId: string) => {
       const request = pickerRequest()
