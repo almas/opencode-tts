@@ -3,6 +3,7 @@ import {
   buttonStateFor,
   claimMenu,
   pickMessageText,
+  requiredLeadSec,
   triggerInsidePanel,
   MESSAGE_TEXT_SELECTOR,
   type NodeLike,
@@ -94,5 +95,28 @@ describe("claimMenu", () => {
   test("claims different menus independently", () => {
     expect(claimMenu(fakeMenu(), "marker")).toBe(true)
     expect(claimMenu(fakeMenu(), "marker")).toBe(true)
+  })
+})
+
+describe("requiredLeadSec", () => {
+  test("unmeasured rate keeps the plain first-segment lead", () => {
+    expect(requiredLeadSec(0)).toBe(0.4)
+    expect(requiredLeadSec(Number.NaN)).toBe(0.4)
+  })
+
+  test("a warm engine outrunning playback starts quickly", () => {
+    expect(requiredLeadSec(2)).toBe(0.45)
+    expect(requiredLeadSec(40)).toBe(0.45)
+  })
+
+  test("a barely-ahead engine buffers more before starting", () => {
+    expect(requiredLeadSec(1.5)).toBe(1.0)
+    expect(requiredLeadSec(1.0)).toBe(2.0)
+    expect(requiredLeadSec(0.5)).toBe(2.0)
+  })
+
+  test("the lead shrinks as the engine warms up", () => {
+    expect(requiredLeadSec(0.5)).toBeGreaterThan(requiredLeadSec(1.5))
+    expect(requiredLeadSec(1.5)).toBeGreaterThan(requiredLeadSec(3))
   })
 })

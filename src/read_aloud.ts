@@ -104,3 +104,22 @@ export function claimMenu(menu: MenuLike, marker: string): boolean {
   menu.setAttribute(marker, "")
   return true
 }
+
+/**
+ * How many seconds of audio must be buffered before streamed playback may
+ * start, given the server's current real-time factor (audio seconds produced
+ * per wall-clock second, measured at the client). A warm resident model runs
+ * far faster than real time and needs only the plain first-segment lead; a
+ * cold one barely outruns playback, so without a bigger cushion later
+ * segments land after the play head already passed their slot and the first
+ * seconds of the clip stutter until the engine catches up.
+ *
+ * @param rate - Measured real-time factor; 0 (or non-finite) means "no
+ *   samples yet", which keeps the plain minimum lead.
+ */
+export function requiredLeadSec(rate: number): number {
+  if (!(rate > 0)) return 0.4
+  if (rate >= 2) return 0.45
+  if (rate >= 1.3) return 1.0
+  return 2.0
+}

@@ -51,8 +51,27 @@ class Server(ThreadingHTTPServer):
         for path in models:
             try:
                 self.voices[path] = PiperVoice.load(path)
+                self.prewarm(self.voices[path])
             except Exception as error:  # noqa: BLE001 — report and keep the rest
                 print(f"WARN failed to load {path}: {error}", flush=True)
+
+    @staticmethod
+    def prewarm(voice) -> None:
+        """Synthesize one syllable so the model's first run is warm.
+
+        ONNX Runtime's first inference on a freshly loaded model is several
+        times slower than later runs (graph optimisation, allocator and page
+        cache warm-up). Without this the first streamed phrase synthesises
+        slower than real time and playback stutters until the model catches
+        up; one throwaway syllable per model moves that cost to start-up.
+        """
+        try:
+            from piper import SynthesisConfig
+
+            for _ in voice.synthesize("あ", SynthesisConfig()):
+                pass
+        except Exception as error:  # noqa: BLE001 — a cold model is still usable
+            print(f"WARN prewarm failed: {error}", flush=True)
 
     def voice(self, model: str):
         """Return a loaded voice, loading the model on first use if needed."""
@@ -62,6 +81,7 @@ class Server(ThreadingHTTPServer):
                 from piper import PiperVoice
 
                 voice = PiperVoice.load(model)
+                self.prewarm(voice)
                 self.voices[model] = voice
             return voice
 
@@ -79,6 +99,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Tts-Token")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        # Without this the webview's fetch cannot read the sample-rate header
+        # and silently falls back to 22050, which plays other rates wrong.
+        self.send_header("Access-Control-Expose-Headers", "X-Tts-Sample-Rate")
 
     def _json(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode()

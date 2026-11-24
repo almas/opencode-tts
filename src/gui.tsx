@@ -17,6 +17,7 @@ import {
   READ_MENU_ATTR,
   buttonStateFor,
   pickMessageText,
+  requiredLeadSec,
   triggerInsidePanel,
   type ButtonState,
 } from "./read_aloud"
@@ -476,10 +477,11 @@ export default Plugin.define({
     let lastMarker = ""
 
     /**
-     * Stream raw PCM from a running `/synth` response and start playing after
-     * the first ~0.4 s of audio, while the rest of the phrase is still being
-     * synthesized. Segments are queued back-to-back on the audio clock, so the
-     * seams are inaudible.
+     * Stream raw PCM from a running `/synth` response and start playing once
+     * a synthesis-rate-sized cushion of audio is buffered (about 0.4 s for a
+     * warm engine, up to 2 s for a cold one), while the rest of the phrase is
+     * still being synthesized. Segments are queued back-to-back on the audio
+     * clock, so the seams are inaudible.
      */
     const playStream = async (
       body: ReadableStream<Uint8Array>,
@@ -491,12 +493,17 @@ export default Plugin.define({
       const active = await wakeOutput(myToken)
       if (myToken !== token) return
       const reader = body.getReader()
-      const segBytes = Math.round(sampleRate * 0.4) * 2
+      const segSec = 0.4
+      const segBytes = Math.round(sampleRate * segSec) * 2
       let pending = new Uint8Array(0)
       let stripHeader = true
       let queuedUntil = active.currentTime + 0.02
       let started = false
       lastMarker = marker
+      // Arrival throughput (audio seconds per wall-clock second) decides how
+      // much of a cushion the start needs; see requiredLeadSec.
+      let firstByteAt = 0
+      let receivedBytes = 0
       for (;;) {
         const { done, value } = await reader.read()
         if (myToken !== token) {
@@ -504,6 +511,8 @@ export default Plugin.define({
           return
         }
         if (value && value.byteLength) {
+          if (!firstByteAt) firstByteAt = performance.now()
+          receivedBytes += value.byteLength
           const merged = new Uint8Array(pending.byteLength + value.byteLength)
           merged.set(pending)
           merged.set(value, pending.byteLength)
@@ -522,6 +531,16 @@ export default Plugin.define({
           const take = done ? pending.byteLength - (pending.byteLength % 2) : Math.min(pending.byteLength, segBytes)
           const whole = take - (take % 2)
           if (whole < 2 || (!done && whole < segBytes)) break
+          if (!started) {
+            const bufferedSec = pending.byteLength / 2 / sampleRate
+            const elapsedSec = firstByteAt ? (performance.now() - firstByteAt) / 1000 : 0
+            const audioSec = Math.max(0, receivedBytes - 44) / 2 / sampleRate
+            const rate = elapsedSec > 0.08 ? audioSec / elapsedSec : 0
+            // A cold engine outruns playback only barely: hold the start
+            // until the buffer covers its measured pace, so segments never
+            // arrive after the play head passed their slot.
+            if (!done && bufferedSec < requiredLeadSec(rate)) break
+          }
           queuedUntil = schedulePcm(active, pending.subarray(0, whole), sampleRate, queuedUntil, playbackRate, marker)
           pending = pending.subarray(whole)
           if (!started) {
