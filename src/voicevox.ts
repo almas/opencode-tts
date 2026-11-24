@@ -82,18 +82,57 @@ async function fetchSpeakers(base: string): Promise<VoicevoxSpeaker[] | null> {
 /**
  * Synthesize one utterance; returns WAV bytes. `speaker` is the style id the
  * catalog listed. Errors propagate — the caller falls back to another voice.
+ *
+ * With a speed other than normal we go through the engine's two-step
+ * `/audio_query` → `/synthesis` flow so the rate setting survives ("a bit
+ * slower/faster" in the preferences); `speech_synthesis` alone ignores it.
+ * Engines or characters without the query endpoint fall back to the simple
+ * one-shot synthesis, and the audio query's own prosody still applies there.
  */
 export async function synthesizeWithVoicevox(
   speaker: number,
   text: string,
-  base = voicevoxBaseUrl(),
+  options: { speedScale?: number; base?: string } = {},
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
+  const base = options.base ?? voicevoxBaseUrl()
+  const timeout = signal ?? AbortSignal.timeout(60_000)
+  const speed = options.speedScale ?? 1
+  if (speed !== 1) {
+    try {
+      return await synthesizeWithQuery(speaker, text, base, speed, timeout)
+    } catch (error) {
+      if (timeout instanceof AbortSignal && timeout.aborted) throw error
+      // Fall through to the plain path; some builds lack /audio_query.
+    }
+  }
   const query = new URLSearchParams({ speaker: String(speaker), text })
   const response = await fetch(`${base}/speech_synthesis?${query.toString()}`, {
     method: "POST",
-    signal: signal ?? AbortSignal.timeout(60_000),
+    signal: timeout,
   })
   if (!response.ok) throw new Error(`voicevox replied ${response.status}`)
   return new Uint8Array(await response.arrayBuffer())
+}
+
+async function synthesizeWithQuery(
+  speaker: number,
+  text: string,
+  base: string,
+  speedScale: number,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  const params = new URLSearchParams({ speaker: String(speaker), text })
+  const queryResponse = await fetch(`${base}/audio_query?${params.toString()}`, { signal })
+  if (!queryResponse.ok) throw new Error(`voicevox audio_query replied ${queryResponse.status}`)
+  const query = (await queryResponse.json()) as Record<string, unknown>
+  query.speedScale = speedScale
+  const synthesis = await fetch(`${base}/synthesis?${new URLSearchParams({ speaker: String(speaker) }).toString()}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "audio/wav" },
+    body: JSON.stringify(query),
+    signal,
+  })
+  if (!synthesis.ok) throw new Error(`voicevox synthesis replied ${synthesis.status}`)
+  return new Uint8Array(await synthesis.arrayBuffer())
 }

@@ -143,6 +143,16 @@ export function rateToLengthScale(rate: number): number {
   return Math.min(2, Math.max(0.5, Number(scale.toFixed(3))))
 }
 
+/**
+ * Maps the UI's rate percent (-50..+50) to VOICEVOX's `speedScale` (a speed
+ * multiplier: higher is faster), the counterpart of `rateToLengthScale`.
+ */
+export function rateToSpeedScale(rate: number): number {
+  const bounded = Math.max(-50, Math.min(100, Number.isFinite(rate) ? rate : 0))
+  const scale = 1 + bounded / 100
+  return Math.min(2, Math.max(0.5, Number(scale.toFixed(3))))
+}
+
 /* ---------------------------------------------------------------- synthesis */
 
 export type SynthesizeOptions = {

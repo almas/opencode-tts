@@ -8,6 +8,7 @@ import {
   defaultVoicesDir,
   flattenUtterance,
   rateToLengthScale,
+  rateToSpeedScale,
   resolvePiperBin,
   sanitizeForSpeech,
   scanPiperVoices,
@@ -65,6 +66,19 @@ describe("rateToLengthScale", () => {
   it("stays inside the engine's sane range", () => {
     expect(rateToLengthScale(500)).toBe(0.5)
     expect(rateToLengthScale(-500)).toBe(2)
+  })
+})
+
+describe("rateToSpeedScale", () => {
+  it("maps the UI rate onto VOICEVOX's speed multiplier", () => {
+    expect(rateToSpeedScale(0)).toBe(1)
+    expect(rateToSpeedScale(-50)).toBe(0.5)
+    expect(rateToSpeedScale(50)).toBe(1.5)
+  })
+
+  it("stays inside the engine's sane range", () => {
+    expect(rateToSpeedScale(500)).toBe(2)
+    expect(rateToSpeedScale(-500)).toBe(0.5)
   })
 })
 

@@ -23,6 +23,7 @@ import {
   defaultVoicesDir,
   flattenUtterance,
   rateToLengthScale,
+  rateToSpeedScale,
   resolvePiperBin,
   sanitizeForSpeech,
   scanPiperVoices,
@@ -278,7 +279,12 @@ export default Plugin.define({
 
         if (chosen.kind === "voicevox") {
           try {
-            const bytes = await synthesizeWithVoicevox(chosen.speakerId, utterance, undefined, control.signal)
+            const bytes = await synthesizeWithVoicevox(
+              chosen.speakerId,
+              utterance,
+              { speedScale: rateToSpeedScale(prefs.rate) },
+              control.signal,
+            )
             return { ...base, audio: toBase64(bytes), mime: "audio/wav" }
           } catch (error) {
             if (control.signal.aborted) throw error
@@ -286,9 +292,10 @@ export default Plugin.define({
             const piper = catalog.find((voice) => voice.engine === "piper")
             const fallback = piper ? parseVoiceId(piper.id, catalog) : null
             if (!fallback || fallback.kind !== "piper") {
-              throw new Error("VOICEVOX で読み上げできませんでした。エンジンが終了した可能性があります", {
-                cause: error,
-              })
+              throw new Error(
+                "VOICEVOX で読み上げできませんでした。VOICEVOX が起動しているか確認してください（http://127.0.0.1:50021 が開ければ起動中です）",
+                { cause: error },
+              )
             }
             const audio = await synthPiper(fallback, utterance, prefs, control.signal)
             return { ...base, ...audio, voice: piper!.id, mime: "audio/wav" }
